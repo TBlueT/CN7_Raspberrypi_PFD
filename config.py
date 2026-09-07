@@ -85,8 +85,13 @@ IMU_ACCEL_FIELDS_ENABLED = True
 # 3개인 걸로 보고 가속도 신호를 안 보내기만 할 뿐 기존 자세각 기능은 안전하게
 # 그대로 동작합니다.
 #   "<sor10>"   출력 주기를 10ms(100Hz)로 설정 (아직 미검증, 필요시 주석 해제)
+# "<soa2>"는 이투박스 EBIMU 계열에서 확인된, Roll/Pitch/Yaw 뒤에 "중력성분이
+# 제거된" 가속도(ax,ay,az, Local 기준)를 추가로 붙여 출력하게 하는 명령입니다.
+# (공식 명령어 표로 확인됨: soa0=미출력, soa1=중력포함 원본, soa2=중력제거
+# Local, soa3=중력제거 Global). 롤 보정 계산에는 중력이 빠진 순수 가속도가
+# 필요해서 soa2를 씀.
 IMU_INIT_COMMANDS = [
-    "<soa1>",
+    "<soa2>",
     # "<sor10>",
 ]
 IMU_INIT_COMMAND_DELAY_SEC = 0.2   # 각 명령 사이 대기 시간
@@ -95,18 +100,15 @@ IMU_INIT_COMMAND_DELAY_SEC = 0.2   # 각 명령 사이 대기 시간
 # EBTerminal로 확인되면 이 값을 실제 명령으로 바꾸세요.
 IMU_STABILIZATION_CHECK_COMMAND = "<savc1>"
 
-# ---- 선회 시 원심력으로 인한 롤(roll) 노이즈 억제 ----
-# 헤딩(yaw) 변화 속도가 이 값(deg/s)을 넘으면 "선회 중"으로 판단해서
-# 롤 값에 더 강한 스무딩을 건다.
-ROLL_STABILIZE_YAW_RATE_THRESHOLD_DEG_S = 15.0
-ROLL_STABILIZE_ALPHA_TURNING = 0.08   # 선회/고가속도 중: 느리게 반영 (노이즈 억제 강함)
-ROLL_STABILIZE_ALPHA_NORMAL = 0.5     # 평상시: 비교적 빠르게 반영
+# ---- 선회 시 원심력으로 인한 롤(roll) 노이즈 보정 ----
+# 물리 공식(원심가속도=속도*요레이트)으로 가짜 롤을 직접 계산해서 빼는 방식.
+# 아래 값은 그 보정 후 남는 잔여 센서 노이즈를 살짝 다듬는 EMA 스무딩 강도.
+# 1.0이면 스무딩 없음(원값 그대로), 작을수록 더 부드럽지만 반응은 느려짐.
+ROLL_SMOOTHING_ALPHA = 0.5
 
-# 가속도 필드가 켜져 있으면(IMU_ACCEL_FIELDS_ENABLED=True) 이 방식이 우선
-# 사용됨. 중력 제외 가속도 크기(m/s^2)가 이 값을 넘으면 "선회/제동/급가속 중"
-# 으로 판단. 약 0.15g ~= 1.5 m/s^2를 기본값으로 둠.
-ROLL_STABILIZE_ACCEL_THRESHOLD_MPS2 = 1.5
-ROLL_STABILIZE_ACCEL_DATA_TIMEOUT_SEC = 0.5   # 이 시간 이상 가속도 데이터가 안 오면 요값 방식으로 폴백
+# soa2로 받는 가로가속도(ay) 축이 실제로 어느 방향을 향하는지는 IMU 장착
+# 방향에 따라 달라짐. 실기에서 우회전 시 노이즈가 더 커지면 -1.0으로 바꾸세요.
+LATERAL_ACCEL_SIGN = 1.0
 
 # ---- 색상 (B737 스타일) ----
 COLOR_SKY = "#1f5fa8"
