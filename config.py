@@ -105,10 +105,12 @@ IMU_STABILIZATION_CHECK_COMMAND = "<savc1>"
 # 아래 값은 그 보정 후 남는 잔여 센서 노이즈를 살짝 다듬는 EMA 스무딩 강도.
 # 1.0이면 스무딩 없음(원값 그대로), 작을수록 더 부드럽지만 반응은 느려짐.
 ROLL_SMOOTHING_ALPHA = 0.5
+PITCH_SMOOTHING_ALPHA = 0.5
 
-# soa2로 받는 가로가속도(ay) 축이 실제로 어느 방향을 향하는지는 IMU 장착
-# 방향에 따라 달라짐. 실기에서 우회전 시 노이즈가 더 커지면 -1.0으로 바꾸세요.
-LATERAL_ACCEL_SIGN = 1.0
+# soa2로 받는 가로가속도(ay)/전후가속도(ax) 축이 실제로 어느 방향을 향하는지는
+# IMU 장착 방향에 따라 달라짐. 실기에서 방향이 반대로 나오면 -1.0으로 바꾸세요.
+LATERAL_ACCEL_SIGN = 1.0        # 롤 보정용 (좌우 원심력)
+LONGITUDINAL_ACCEL_SIGN = 1.0   # 피치 보정용 (가감속)
 
 # ---- 색상 (B737 스타일) ----
 COLOR_SKY = "#1f5fa8"
