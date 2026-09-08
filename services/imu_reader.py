@@ -206,11 +206,10 @@ class ImuReaderThread(QThread):
         except ValueError:
             return
 
-        self.attitude_updated.emit(roll, pitch, yaw)
-
         # EBIMU에 추가 출력 필드(가속도)가 켜져 있으면 Roll,Pitch,Yaw 뒤에
-        # ax,ay,az가 이어서 옴. config.IMU_ACCEL_FIELDS_ENABLED로 이 프로젝트가
-        # 그 필드를 기대하는지 표시하고, 실제로 필드 개수가 충분할 때만 파싱.
+        # ax,ay,az가 이어서 옴. 롤 보정 계산(같은 샘플의 최신 가속도 필요)이
+        # attitude_updated를 구독하는 쪽에서 바로 쓸 수 있도록, 가속도를 먼저
+        # 파싱/발행한 뒤에 자세각을 발행한다.
         if getattr(config, "IMU_ACCEL_FIELDS_ENABLED", False):
             if len(parts) >= 6:
                 try:
@@ -218,20 +217,23 @@ class ImuReaderThread(QThread):
                     ay = float(parts[4])
                     az = float(parts[5])
                 except ValueError:
-                    return
-                self.linear_accel_updated.emit(ax, ay, az)
+                    ax = ay = az = None
+                if ax is not None:
+                    self.linear_accel_updated.emit(ax, ay, az)
 
-                if self._accel_debug_count < 5:
-                    self._accel_debug_count += 1
-                    self.connection_error.emit(
-                        f"IMU 가속도 필드 파싱됨 [{self._accel_debug_count}/5]: "
-                        f"ax={ax:.3f} ay={ay:.3f} az={az:.3f}")
+                    if self._accel_debug_count < 5:
+                        self._accel_debug_count += 1
+                        self.connection_error.emit(
+                            f"IMU 가속도 필드 파싱됨 [{self._accel_debug_count}/5]: "
+                            f"ax={ax:.3f} ay={ay:.3f} az={az:.3f}")
             elif not self._accel_warned_short:
                 self._accel_warned_short = True
                 self.connection_error.emit(
                     f"IMU_ACCEL_FIELDS_ENABLED=True인데 필드가 {len(parts)}개뿐입니다 "
-                    f"(6개 이상 필요) - <soa1> 명령이 안 먹혔거나 필드 순서가 다를 수 "
+                    f"(6개 이상 필요) - <soa2> 명령이 안 먹혔거나 필드 순서가 다를 수 "
                     f"있습니다. raw payload 예시: {payload!r}")
+
+        self.attitude_updated.emit(roll, pitch, yaw)
 
     def stop(self):
         self._running = False
