@@ -23,10 +23,16 @@ CAN 속도 데이터는 쓰지 않고 IMU 자체 출력값만 사용합니다: E
     가짜roll(도) = atan2(가로가속도 ay, 중력가속도) 를 도(degree)로 변환
     보정된 롤 = 측정된 롤 - 가짜roll
 
+같은 원리가 피치(pitch)에도 적용됩니다: 급가속/급제동 시 진행방향(전후)
+가속도(ax)가 실제로는 없는 노즈업/노즈다운을 만들어냅니다.
+
+    가짜pitch(도) = atan2(전후가속도 ax, 중력가속도) 를 도(degree)로 변환
+    보정된 피치 = 측정된 피치 - 가짜pitch
+
 가속도계가 실측한 실제 힘을 그대로 쓰는 방식이라, 속도 센서(CAN) 연결 여부나
 정확도와 무관하게 동작합니다. 스무딩(EMA)과 달리 오차의 원인을 직접 제거하는
-방식이라 선회가 얼마나 길게 지속되든 반응 지연 없이 정확합니다. 잔여 센서
-노이즈 제거용으로 가벼운 EMA 스무딩을 보조적으로만 얹습니다.
+방식이라 선회/가감속이 얼마나 길게 지속되든 반응 지연 없이 정확합니다. 잔여
+센서 노이즈 제거용으로 가벼운 EMA 스무딩을 보조적으로만 얹습니다.
 """
 
 import math
@@ -47,10 +53,12 @@ class PFDViewModel(QObject):
         self.attitude = AttitudeModel()
         self.vehicle = VehicleModel()
 
-        # 롤 보정/스무딩용 내부 상태
+        # 롤/피치 보정/스무딩용 내부 상태
         self._smoothed_roll = 0.0
-        self._latest_lateral_accel = 0.0   # IMU soa2의 ay(가로가속도), m/s^2
-        self._has_accel_data = False       # soa2 필드가 실제로 들어오고 있는지
+        self._smoothed_pitch = 0.0
+        self._latest_lateral_accel = 0.0       # IMU soa2의 ay(가로가속도), m/s^2
+        self._latest_longitudinal_accel = 0.0  # IMU soa2의 ax(전후가속도), m/s^2
+        self._has_accel_data = False           # soa2 필드가 실제로 들어오고 있는지
 
         # 속도 표시 애니메이션용 타이머 - CAN 데이터 도착 빈도와 무관하게
         # 고정 주기로 표시값을 목표치 쪽으로 조금씩 이동시킴
@@ -66,24 +74,31 @@ class PFDViewModel(QObject):
         if self._has_accel_data:
             spurious_roll = math.degrees(
                 math.atan2(self._latest_lateral_accel, GRAVITY_MPS2))
+            spurious_pitch = math.degrees(
+                math.atan2(self._latest_longitudinal_accel, GRAVITY_MPS2))
             corrected_roll = roll_deg - spurious_roll
+            corrected_pitch = pitch_deg - spurious_pitch
         else:
             # soa2 데이터가 아직 안 들어왔으면 보정 없이 원본 그대로 사용
             corrected_roll = roll_deg
+            corrected_pitch = pitch_deg
 
         # 잔여 센서 노이즈 제거용 가벼운 스무딩 (주된 보정은 위에서 이미 끝남)
         self._smoothed_roll += config.ROLL_SMOOTHING_ALPHA * (corrected_roll - self._smoothed_roll)
+        self._smoothed_pitch += config.PITCH_SMOOTHING_ALPHA * (corrected_pitch - self._smoothed_pitch)
 
         self.attitude.roll_deg = self._smoothed_roll
-        self.attitude.pitch_deg = pitch_deg
+        self.attitude.pitch_deg = self._smoothed_pitch
         self.attitude.yaw_deg = yaw_deg
 
     # ---- services.imu_reader.ImuReaderThread.linear_accel_updated 에 연결 ----
     def on_linear_accel_updated(self, ax: float, ay: float, az: float):
-        """soa2(중력성분 제거, Local 기준) 출력. ay를 가로(원심력) 방향
-        가속도로 사용. IMU 장착 방향에 따라 부호/축이 다르면
-        config.LATERAL_ACCEL_AXIS_SIGN으로 보정."""
+        """soa2(중력성분 제거, Local 기준) 출력. ay는 가로(원심력) 방향,
+        ax는 전후(가감속) 방향 가속도로 사용. IMU 장착 방향에 따라 부호/축이
+        다르면 config.LATERAL_ACCEL_SIGN / config.LONGITUDINAL_ACCEL_SIGN으로
+        보정."""
         self._latest_lateral_accel = ay * config.LATERAL_ACCEL_SIGN
+        self._latest_longitudinal_accel = ax * config.LONGITUDINAL_ACCEL_SIGN
         self._has_accel_data = True
 
     # ---- services.imu_reader.ImuReaderThread.feature_check_updated 에 연결 ----
