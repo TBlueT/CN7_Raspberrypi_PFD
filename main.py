@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         # ---- Service(Reader 스레드) -> ViewModel 연결 ----
         self.imu_thread = ImuReaderThread()
         self.imu_thread.attitude_updated.connect(self.pfd_vm.on_attitude_updated)
+        self.imu_thread.gyro_updated.connect(self.pfd_vm.on_gyro_updated)
         self.imu_thread.linear_accel_updated.connect(self.pfd_vm.on_linear_accel_updated)
         self.imu_thread.feature_check_updated.connect(self.pfd_vm.on_imu_feature_check)
         self.imu_thread.attitude_updated.connect(
