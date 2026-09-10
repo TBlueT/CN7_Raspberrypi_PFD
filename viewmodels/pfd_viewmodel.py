@@ -10,29 +10,12 @@ services(Reader 스레드)의 시그널을 받는 슬롯들을 제공하고, 내
 대신 View가 FRAME_RATE_HZ 주기의 타이머로 스스로 최신 상태를 읽어가서 그리는
 방식(폴링)을 씁니다. 이 클래스는 그냥 "가장 최신 값이 뭔지" 저장만 합니다.
 
-차량 선회 시 관성력이 가속도계를 흔들어서 실제로는 평지인데도 롤(roll) 값이
-틀어지는 노이즈가 생길 수 있습니다. IMU 자체에는 이걸 자동으로 걸러주는
-기능이 없어서, 원심력으로 인한 "가짜 롤"의 크기를 직접 계산해서 빼주는
-방식으로 보정합니다.
-
-CAN 속도 데이터는 쓰지 않고 IMU 자체 출력값만 사용합니다: EBIMU의 "중력성분
-제거된 가속도"(soa2, Local 기준) 출력을 켜두면, 옆방향(가로) 가속도(ay)가
-바로 지금 얼마나 원심력을 받고 있는지를 직접 알려줍니다. 이 값을 중력가속도와
-비교한 각도가 곧 "가짜roll" 크기입니다.
-
-    가짜roll(도) = atan2(가로가속도 ay, 중력가속도) 를 도(degree)로 변환
-    보정된 롤 = 측정된 롤 - 가짜roll
-
-같은 원리가 피치(pitch)에도 적용됩니다: 급가속/급제동 시 진행방향(전후)
-가속도(ax)가 실제로는 없는 노즈업/노즈다운을 만들어냅니다.
-
-    가짜pitch(도) = atan2(전후가속도 ax, 중력가속도) 를 도(degree)로 변환
-    보정된 피치 = 측정된 피치 - 가짜pitch
-
-가속도계가 실측한 실제 힘을 그대로 쓰는 방식이라, 속도 센서(CAN) 연결 여부나
-정확도와 무관하게 동작합니다. 스무딩(EMA)과 달리 오차의 원인을 직접 제거하는
-방식이라 선회/가감속이 얼마나 길게 지속되든 반응 지연 없이 정확합니다. 잔여
-센서 노이즈 제거용으로 가벼운 EMA 스무딩을 보조적으로만 얹습니다.
+롤/피치는 EBIMU 자체 계산값을 사후 보정하는 대신, services.ahrs_filter의
+Mahony 필터로 raw 자이로+가속도에서 직접 추정합니다 (항공/로보틱스 표준
+방식). CAN 속도나 요값 변화율에 의존하지 않고, 필터 자체가 선회/가감속
+중 가속도계 신뢰도를 자연스럽게 낮추는 구조라 원심력 문제를 원천적으로
+완화합니다. 요(yaw)는 이 필터로 계산하지 않고 EBIMU 자체 출력(지자기 보정
+포함)을 그대로 씁니다.
 """
 
 import math
@@ -43,8 +26,7 @@ from PyQt6.QtCore import QObject, QTimer
 import config
 from models.attitude_model import AttitudeModel
 from models.vehicle_model import VehicleModel
-
-GRAVITY_MPS2 = 9.81
+from services.ahrs_filter import MahonyAHRS
 
 
 class PFDViewModel(QObject):
@@ -53,12 +35,12 @@ class PFDViewModel(QObject):
         self.attitude = AttitudeModel()
         self.vehicle = VehicleModel()
 
-        # 롤/피치 보정/스무딩용 내부 상태
+        self._ahrs = MahonyAHRS(kp=config.MAHONY_KP, ki=config.MAHONY_KI)
+        self._latest_gyro = None    # (gx, gy, gz) rad/s
+        self._latest_accel = None   # (ax, ay, az) 중력 포함
+        self._ahrs_last_time = None
         self._smoothed_roll = 0.0
         self._smoothed_pitch = 0.0
-        self._latest_lateral_accel = 0.0       # IMU soa2의 ay(가로가속도), m/s^2
-        self._latest_longitudinal_accel = 0.0  # IMU soa2의 ax(전후가속도), m/s^2
-        self._has_accel_data = False           # soa2 필드가 실제로 들어오고 있는지
 
         # 속도 표시 애니메이션용 타이머 - CAN 데이터 도착 빈도와 무관하게
         # 고정 주기로 표시값을 목표치 쪽으로 조금씩 이동시킴
@@ -67,39 +49,46 @@ class PFDViewModel(QObject):
         self._speed_anim_timer.timeout.connect(self._on_speed_animation_tick)
         self._speed_anim_timer.start(int(1000 / config.FRAME_RATE_HZ))
 
+    # ---- services.imu_reader.ImuReaderThread.gyro_updated 에 연결 ----
+    def on_gyro_updated(self, gx: float, gy: float, gz: float):
+        """sog1 출력(deg/s 가정) - 축 부호 보정 후 Mahony 필터가 쓰는
+        rad/s로 변환해서 저장."""
+        sx, sy, sz = config.GYRO_SIGN
+        gx, gy, gz = gx * sx, gy * sy, gz * sz
+        if config.GYRO_UNIT_IS_DEG_PER_SEC:
+            gx, gy, gz = math.radians(gx), math.radians(gy), math.radians(gz)
+        self._latest_gyro = (gx, gy, gz)
+
+    # ---- services.imu_reader.ImuReaderThread.linear_accel_updated 에 연결 ----
+    def on_linear_accel_updated(self, ax: float, ay: float, az: float):
+        """soa1 출력(중력 포함 원본) - 축 부호 보정 후 저장.
+        Mahony 필터가 중력 방향 보정에 사용."""
+        sx, sy, sz = config.ACCEL_SIGN
+        self._latest_accel = (ax * sx, ay * sy, az * sz)
+
     # ---- services.imu_reader.ImuReaderThread.attitude_updated 에 연결 ----
     def on_attitude_updated(self, roll_deg: float, pitch_deg: float, yaw_deg: float):
         yaw_deg = yaw_deg % 360.0
 
-        if self._has_accel_data:
-            spurious_roll = math.degrees(
-                math.atan2(self._latest_lateral_accel, GRAVITY_MPS2))
-            spurious_pitch = math.degrees(
-                math.atan2(self._latest_longitudinal_accel, GRAVITY_MPS2))
-            corrected_roll = roll_deg - spurious_roll
-            corrected_pitch = pitch_deg - spurious_pitch
-        else:
-            # soa2 데이터가 아직 안 들어왔으면 보정 없이 원본 그대로 사용
-            corrected_roll = roll_deg
-            corrected_pitch = pitch_deg
+        now = time.monotonic()
+        dt = (now - self._ahrs_last_time) if self._ahrs_last_time is not None else None
+        self._ahrs_last_time = now
 
-        # 잔여 센서 노이즈 제거용 가벼운 스무딩 (주된 보정은 위에서 이미 끝남)
-        self._smoothed_roll += config.ROLL_SMOOTHING_ALPHA * (corrected_roll - self._smoothed_roll)
-        self._smoothed_pitch += config.PITCH_SMOOTHING_ALPHA * (corrected_pitch - self._smoothed_pitch)
+        if self._latest_gyro is not None and self._latest_accel is not None and dt:
+            gx, gy, gz = self._latest_gyro
+            ax, ay, az = self._latest_accel
+            self._ahrs.update(gx, gy, gz, ax, ay, az, dt)
+            roll_deg, pitch_deg = self._ahrs.get_roll_pitch_deg()
+        # else: 자이로/가속도 원시값이 아직 없으면(sog1/soa1 미적용 등)
+        # EBIMU 자체 계산값을 그대로 사용 (안전한 폴백)
+
+        # 필터로 계산한 값에 잔여 노이즈 제거용 가벼운 스무딩을 추가로 얹음
+        self._smoothed_roll += config.ROLL_SMOOTHING_ALPHA * (roll_deg - self._smoothed_roll)
+        self._smoothed_pitch += config.PITCH_SMOOTHING_ALPHA * (pitch_deg - self._smoothed_pitch)
 
         self.attitude.roll_deg = self._smoothed_roll
         self.attitude.pitch_deg = self._smoothed_pitch
         self.attitude.yaw_deg = yaw_deg
-
-    # ---- services.imu_reader.ImuReaderThread.linear_accel_updated 에 연결 ----
-    def on_linear_accel_updated(self, ax: float, ay: float, az: float):
-        """soa2(중력성분 제거, Local 기준) 출력. ay는 가로(원심력) 방향,
-        ax는 전후(가감속) 방향 가속도로 사용. IMU 장착 방향에 따라 부호/축이
-        다르면 config.LATERAL_ACCEL_SIGN / config.LONGITUDINAL_ACCEL_SIGN으로
-        보정."""
-        self._latest_lateral_accel = ay * config.LATERAL_ACCEL_SIGN
-        self._latest_longitudinal_accel = ax * config.LONGITUDINAL_ACCEL_SIGN
-        self._has_accel_data = True
 
     # ---- services.imu_reader.ImuReaderThread.feature_check_updated 에 연결 ----
     def on_imu_feature_check(self, confirmed: bool):
