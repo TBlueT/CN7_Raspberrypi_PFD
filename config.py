@@ -91,7 +91,9 @@ IMU_ACCEL_FIELDS_ENABLED = True
 # Local, soa3=중력제거 Global). 롤 보정 계산에는 중력이 빠진 순수 가속도가
 # 필요해서 soa2를 씀.
 IMU_INIT_COMMANDS = [
-    "<soa2>",
+    "<soa1>",
+    "<ltf3>",
+    "<ssa2>",
     # "<sor10>",
 ]
 IMU_INIT_COMMAND_DELAY_SEC = 0.2   # 각 명령 사이 대기 시간
