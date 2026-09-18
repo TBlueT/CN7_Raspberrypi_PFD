@@ -20,9 +20,10 @@ import config
 class ImuReaderThread(QThread):
     # roll_deg, pitch_deg, yaw_deg
     attitude_updated = pyqtSignal(float, float, float)
-    # ax, ay, az (중력성분 제거된 가속도, m/s^2) - EBIMU에서 추가 출력 필드가
-    # 켜져 있고 한 줄에 6개 이상 값이 올 때만 발행됨. 켜져 있지 않으면 이
-    # 신호는 아예 안 옴 (연결한 쪽에서 굳이 처리 안 해도 무방).
+    # gx, gy, gz (raw 각속도, deg/s 또는 rad/s - config.GYRO_UNIT_IS_DEG_PER_SEC로 표시)
+    # EBIMU에 sog1로 자이로 추가 출력이 켜져 있어야 발행됨.
+    gyro_updated = pyqtSignal(float, float, float)
+    # ax, ay, az (가속도, m/s^2) - EBIMU에서 추가 출력 필드가 켜져 있어야 발행됨.
     linear_accel_updated = pyqtSignal(float, float, float)
     # True: 내장 안정화 기능(AVC 등) 명령에 응답 있음 / False: 응답 없음(기능
     # 없거나 명령이 안 맞음). 연결될 때마다 한 번씩 발행됨.
@@ -34,8 +35,8 @@ class ImuReaderThread(QThread):
         self._port = port or config.IMU_SERIAL_PORT
         self._baudrate = baudrate or config.IMU_BAUDRATE
         self._running = False
-        self._accel_debug_count = 0     # 가속도 파싱 성공 로그, 처음 5회만
-        self._accel_warned_short = False  # 필드 부족 경고, 1회만
+        self._extra_debug_count = 0     # 자이로/가속도 파싱 성공 로그, 처음 5회만
+        self._extra_warned_short = False  # 필드 부족 경고, 1회만
 
     def run(self):
         self._running = True
@@ -206,32 +207,41 @@ class ImuReaderThread(QThread):
         except ValueError:
             return
 
-        # EBIMU에 추가 출력 필드(가속도)가 켜져 있으면 Roll,Pitch,Yaw 뒤에
-        # ax,ay,az가 이어서 옴. 롤 보정 계산(같은 샘플의 최신 가속도 필요)이
-        # attitude_updated를 구독하는 쪽에서 바로 쓸 수 있도록, 가속도를 먼저
-        # 파싱/발행한 뒤에 자세각을 발행한다.
-        if getattr(config, "IMU_ACCEL_FIELDS_ENABLED", False):
-            if len(parts) >= 6:
-                try:
-                    ax = float(parts[3])
-                    ay = float(parts[4])
-                    az = float(parts[5])
-                except ValueError:
-                    ax = ay = az = None
-                if ax is not None:
-                    self.linear_accel_updated.emit(ax, ay, az)
+        # EBIMU에 추가 출력 필드(자이로/가속도)가 켜져 있으면 Roll,Pitch,Yaw
+        # 뒤에 3개씩 이어서 옴. 순서는 config.IMU_EXTRA_FIELD_ORDER로 결정
+        # (예: ["gyro","accel"] -> Roll,Pitch,Yaw,gx,gy,gz,ax,ay,az).
+        # Mahony 필터(같은 샘플의 최신 자이로+가속도 필요)가 attitude_updated를
+        # 구독하는 쪽에서 바로 쓸 수 있도록, 자이로/가속도를 먼저 파싱/발행한
+        # 뒤에 자세각을 발행한다.
+        extra_order = getattr(config, "IMU_EXTRA_FIELD_ORDER", [])
+        expected_len = 3 + 3 * len(extra_order)
 
-                    if self._accel_debug_count < 5:
-                        self._accel_debug_count += 1
+        if extra_order:
+            if len(parts) >= expected_len:
+                try:
+                    values = [float(p) for p in parts[3:expected_len]]
+                except ValueError:
+                    values = None
+
+                if values is not None:
+                    for i, kind in enumerate(extra_order):
+                        x, y, z = values[i * 3:i * 3 + 3]
+                        if kind == "gyro":
+                            self.gyro_updated.emit(x, y, z)
+                        elif kind == "accel":
+                            self.linear_accel_updated.emit(x, y, z)
+
+                    if self._extra_debug_count < 5:
+                        self._extra_debug_count += 1
                         self.connection_error.emit(
-                            f"IMU 가속도 필드 파싱됨 [{self._accel_debug_count}/5]: "
-                            f"ax={ax:.3f} ay={ay:.3f} az={az:.3f}")
-            elif not self._accel_warned_short:
-                self._accel_warned_short = True
+                            f"IMU 추가 필드({'+'.join(extra_order)}) 파싱됨 "
+                            f"[{self._extra_debug_count}/5]: {values}")
+            elif not self._extra_warned_short:
+                self._extra_warned_short = True
                 self.connection_error.emit(
-                    f"IMU_ACCEL_FIELDS_ENABLED=True인데 필드가 {len(parts)}개뿐입니다 "
-                    f"(6개 이상 필요) - <soa2> 명령이 안 먹혔거나 필드 순서가 다를 수 "
-                    f"있습니다. raw payload 예시: {payload!r}")
+                    f"IMU_EXTRA_FIELD_ORDER={extra_order}인데 필드가 {len(parts)}개뿐입니다 "
+                    f"({expected_len}개 필요) - 초기화 명령이 안 먹혔거나 필드 순서가 다를 "
+                    f"수 있습니다. raw payload 예시: {payload!r}")
 
         self.attitude_updated.emit(roll, pitch, yaw)
 
