@@ -49,14 +49,6 @@ SSDP_SEARCH_TARGET = "urn:schemas-sony-com:service:ScalarWebAPI:1"
 class SonyQX10Capture:
     """cv2.VideoCapture와 같은 인터페이스: isOpened(), read(), release()."""
 
-    def __init__(self, discovery_timeout_sec: float = 5.0,
-                 fixed_endpoint_url: str = None):
-        self._discovery_timeout_sec = discovery_timeout_sec
-        self._fixed_endpoint_url = fixed_endpoint_url
-        self._conn = None
-        self._stream_response = None
-        self._opened = False
-
     def isOpened(self) -> bool:
         return self._opened
 
@@ -85,8 +77,25 @@ class SonyQX10Capture:
             print(f"[SonyQX10] 연결 실패: {type(exc).__name__}: {exc}")
             return False
 
+    def __init__(self, discovery_timeout_sec: float = 5.0,
+                 fixed_endpoint_url: str = None,
+                 wifi_interface: str = None):
+        self._discovery_timeout_sec = discovery_timeout_sec
+        self._fixed_endpoint_url = fixed_endpoint_url
+        self._wifi_interface = wifi_interface  # 예: "wlan1" - 여러 와이파이 동시 연결 시 필수
+        self._conn = None
+        self._stream_response = None
+        self._opened = False
+
     def _discover_camera(self):
-        """SSDP M-SEARCH로 카메라를 찾아서 Camera Remote API 액션 URL을 반환."""
+        """SSDP M-SEARCH로 카메라를 찾아서 Camera Remote API 액션 URL을 반환.
+
+        와이파이가 여러 개 동시에 연결되어 있으면(예: 인터넷용 wlan0 +
+        카메라용 wlan1), 소켓에 나가는 인터페이스를 명시적으로 지정 안 하면
+        OS가 기본 경로(보통 인터넷 쪽)로 멀티캐스트를 보내버려서 카메라가
+        있는 네트워크로는 탐색 신호 자체가 안 나갈 수 있다. 그래서
+        self._wifi_interface가 지정되어 있으면 SO_BINDTODEVICE로 그
+        인터페이스에 소켓을 강제로 묶는다."""
         message = "\r\n".join([
             "M-SEARCH * HTTP/1.1",
             f"HOST: {SSDP_MULTICAST_ADDR}:{SSDP_PORT}",
@@ -98,6 +107,17 @@ class SonyQX10Capture:
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(self._discovery_timeout_sec)
+
+        if self._wifi_interface:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE,
+                                 self._wifi_interface.encode())
+            except (AttributeError, OSError) as exc:
+                # SO_BINDTODEVICE는 리눅스 전용 + 보통 root 권한 필요.
+                # 실패해도 일단 계속 진행 (인터페이스가 하나뿐이면 문제 없음)
+                print(f"[SonyQX10] {self._wifi_interface}에 소켓 바인딩 실패"
+                      f"({type(exc).__name__}: {exc}) - 기본 경로로 계속 시도")
+
         sock.sendto(message, (SSDP_MULTICAST_ADDR, SSDP_PORT))
 
         location_url = None
