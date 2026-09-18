@@ -93,25 +93,24 @@ OBD_DBC_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "hyun
 # EBIMU ASCII 출력 포맷: "*Roll,Pitch,Yaw\r\n"
 IMU_LINE_PREFIX = "*"
 
-# EBIMU에 가속도 추가 출력 필드가 켜져 있는지 (Roll,Pitch,Yaw,ax,ay,az 형태).
-# EBTerminal 등으로 해당 출력 모드를 켜고 필드 순서를 확인한 뒤 True로 바꾸세요.
-# False인 동안은 롤 스무딩이 요값 변화율 기반(폴백)으로만 동작합니다.
-IMU_ACCEL_FIELDS_ENABLED = True
+# EBIMU에 추가 출력 필드(자이로/가속도)가 켜져 있으면 Roll,Pitch,Yaw 뒤에
+# 순서대로 3개씩 더 붙어 옴. 이 리스트가 그 순서를 나타냄
+# (예: ["gyro","accel"] -> *Roll,Pitch,Yaw,gx,gy,gz,ax,ay,az).
+# 자이로/가속도 필드가 전혀 없으면 빈 리스트로 두면 됨(자세각만 파싱).
+IMU_EXTRA_FIELD_ORDER = ["gyro", "accel"]
+
+# 자이로 원시값 단위가 deg/s인지 (아니면 이미 rad/s라고 가정하고 안 바꿈)
+GYRO_UNIT_IS_DEG_PER_SEC = True
+
+# 자이로/가속도 각 축 부호가 실제 장착 방향과 안 맞으면 조정 (-1.0으로 반전)
+GYRO_SIGN = (1.0, 1.0, 1.0)   # (gx, gy, gz)
+ACCEL_SIGN = (1.0, 1.0, 1.0)  # (ax, ay, az)
 
 # ---- EBIMU 부팅/재연결 시 자동으로 보낼 초기화 명령 ----
-# "<soa1>"은 이투박스 EBIMU 계열에서 확인된, Roll/Pitch/Yaw 뒤에 가속도(ax,ay,az)를
-# 추가로 붙여 출력하게 하는 명령입니다(구형 V3 문서 기준으로 확인됨 - V5-R3가
-# 하위호환된다는 제조사 설명을 근거로 우선 적용). 100% 검증된 값은 아니니,
-# 실기에서 [IMU] 로그로 실제 파싱되는 값 개수를 꼭 확인하세요 (아래 "확인 방법" 참고).
-# 만약 이 명령이 안 먹히거나 필드 순서가 다르면, imu_reader.py는 그냥 필드가
-# 3개인 걸로 보고 가속도 신호를 안 보내기만 할 뿐 기존 자세각 기능은 안전하게
-# 그대로 동작합니다.
-#   "<sor10>"   출력 주기를 10ms(100Hz)로 설정 (아직 미검증, 필요시 주석 해제)
-# "<soa2>"는 이투박스 EBIMU 계열에서 확인된, Roll/Pitch/Yaw 뒤에 "중력성분이
-# 제거된" 가속도(ax,ay,az, Local 기준)를 추가로 붙여 출력하게 하는 명령입니다.
-# (공식 명령어 표로 확인됨: soa0=미출력, soa1=중력포함 원본, soa2=중력제거
-# Local, soa3=중력제거 Global). 롤 보정 계산에는 중력이 빠진 순수 가속도가
-# 필요해서 soa2를 씀.
+# "<sog1>": 자이로(각속도) 원시값 추가 출력. "<soa1>": 가속도 원시값(중력
+# 포함, Mahony 필터가 중력방향을 알아야 하므로 중력이 포함된 원본이 필요함
+# - soa2의 "중력 제거"판이 아님). 공식 명령어 표로 soa0~soa5, sog1 확인됨.
+# 100% 검증된 값은 아니니 실기에서 [IMU] 로그로 확인 필요.
 IMU_INIT_COMMANDS = [
     "<soa1>",
     "<ltf3>",
@@ -123,17 +122,18 @@ IMU_INIT_COMMAND_DELAY_SEC = 0.2   # 각 명령 사이 대기 시간
 # EBTerminal로 확인되면 이 값을 실제 명령으로 바꾸세요.
 IMU_STABILIZATION_CHECK_COMMAND = "<savc1>"
 
-# ---- 선회 시 원심력으로 인한 롤(roll) 노이즈 보정 ----
-# 물리 공식(원심가속도=속도*요레이트)으로 가짜 롤을 직접 계산해서 빼는 방식.
-# 아래 값은 그 보정 후 남는 잔여 센서 노이즈를 살짝 다듬는 EMA 스무딩 강도.
-# 1.0이면 스무딩 없음(원값 그대로), 작을수록 더 부드럽지만 반응은 느려짐.
-ROLL_SMOOTHING_ALPHA = 0.5
-PITCH_SMOOTHING_ALPHA = 0.5
+# ---- Mahony AHRS 필터 (선회/가감속 시 원심력·관성력으로 인한 롤/피치
+# 노이즈를 raw 자이로+가속도로 직접 추정해서 완화) ----
+# Kp: 가속도계로 자이로 드리프트를 보정하는 강도 (0에 가까울수록 자이로만
+# 신뢰해서 원심력에 안 흔들리지만 실제 기울기 반영은 느려짐)
+# Ki: 적분 보정 강도 (0.0이면 안 씀 - 기본값 권장)
+MAHONY_KP = 0.3
+MAHONY_KI = 0.0
 
-# soa2로 받는 가로가속도(ay)/전후가속도(ax) 축이 실제로 어느 방향을 향하는지는
-# IMU 장착 방향에 따라 달라짐. 실기에서 방향이 반대로 나오면 -1.0으로 바꾸세요.
-LATERAL_ACCEL_SIGN = 1.0        # 롤 보정용 (좌우 원심력)
-LONGITUDINAL_ACCEL_SIGN = 1.0   # 피치 보정용 (가감속)
+# 필터로 계산한 값에 잔여 노이즈 제거용으로 추가로 얹는 가벼운 EMA 스무딩.
+# 1.0이면 스무딩 없음(원값 그대로), 작을수록 더 부드럽지만 반응은 느려짐.
+ROLL_SMOOTHING_ALPHA = 0.7
+PITCH_SMOOTHING_ALPHA = 0.7
 
 # ---- 색상 (B737 스타일) ----
 COLOR_SKY = "#1f5fa8"
