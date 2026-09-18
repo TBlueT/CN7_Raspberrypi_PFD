@@ -127,6 +127,7 @@ class CameraDepthReaderThread(QThread):
             cap = SonyQX10Capture(
                 discovery_timeout_sec=config.SONY_QX10_DISCOVERY_TIMEOUT_SEC,
                 fixed_endpoint_url=config.SONY_QX10_FIXED_ENDPOINT_URL,
+                wifi_interface=config.SONY_QX10_WIFI_INTERFACE,
             )
             cap.open()
             return cap
