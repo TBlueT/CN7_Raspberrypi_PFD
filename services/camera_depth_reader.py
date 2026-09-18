@@ -1,35 +1,41 @@
 """
-카메라 + YOLO26-Depth 리더 스레드
+카메라 + YOLO 리더 스레드 (NCNN 변환 버전)
 
-라이다가 차량 자외선차단 필름(근적외선 차단)을 통과하지 못해 카메라 기반
-단안 깊이추정으로 교체했습니다. YOLO26-Depth(Ultralytics)로 화면 전체의
-픽셀별 미터 단위 깊이를 얻은 뒤, 라이다 때처럼 낱개 포인트를 그대로 뿌리는
-대신 실제 B737 TCAS(공중충돌방지) 화면처럼 "물체 단위"로 묶어서 각도/거리를
-하나씩만 냅니다.
+모델을 라즈베리파이4 ARM CPU에 더 적합한 NCNN 포맷으로 변환해서 씁니다.
+
+왜: 라즈베리파이4의 GPU(VideoCore VI)는 PyTorch 텐서 연산을 가속할 공식
+경로가 없어서 "GPU 켜기"가 사실상 의미가 없습니다. 대신 Ultralytics 공식
+가이드가 추천하는 대로, ARM CPU에 최적화된 NCNN으로 변환하면 같은 CPU에서도
+더 빠르게 돌아갈 수 있습니다 (NCNN은 필요하면 Vulkan으로 GPU도 추가로 쓸 수
+있음).
 
 동작 순서:
-  1. 관심영역(ROI, 하늘/대시보드 제외한 도로 높이 부분)만 잘라냄
-  2. 각 세로 열(column)의 최소 깊이값 = 그 방향에서 가장 가까운 장애물 거리
-  3. 인접한 열끼리 깊이가 비슷하면(OBJECT_CLUSTER_DEPTH_TOLERANCE_M 이내)
-     하나의 "물체"로 묶음 (노이즈 제거용으로 최소 폭 미만 클러스터는 버림)
-  4. 각 클러스터의 중심 열 위치를 카메라 시야각 기준 각도로 변환
-  5. (각도, 거리) 리스트를 scan_updated로 발행 - 기존 라이다 신호와 완전히
-     같은 인터페이스라 NDViewModel/NDView 쪽은 안 건드려도 됨(표시 방식만
-     nd_view.py에서 점 -> 마름모로 변경)
+  1. 탐지 모델로 프레임에서 차량/사람 등을 탐지 (바운딩박스 + 클래스)
+  2. 깊이 모델로 같은 프레임의 픽셀별 깊이맵(미터) 추정
+  3. 각 탐지 박스 영역 안의 깊이값 중앙값 = 그 물체까지의 거리
+  4. 박스 중심의 화면 x좌표를 카메라 시야각 기준 각도로 변환
+  5. (angle_deg, distance_m) 리스트로 scan_updated 발행
+     - views.nd_view가 이 값을 받아 물체 하나당 마름모(TCAS 스타일)로 표시
 
-주의: 이 파일은 실제 카메라/모델 없이는 이 샌드박스에서 끝까지 실행해볼 수
-없습니다. 클러스터링 로직(_extract_objects_from_depth_map)만 가짜 깊이
-배열로 단위 테스트했습니다. 실기에서 다음을 꼭 확인하세요:
-  - `pip install ultralytics opencv-python` 설치 여부
-  - YOLO26n-depth.pt 최초 실행 시 자동 다운로드되는지(인터넷 필요)
-  - model.predict()가 반환하는 깊이맵의 정확한 속성명/형태는 ultralytics
-    버전에 따라 다를 수 있어 아래 _run_inference()의 결과 파싱 부분을
-    실제 응답 구조 보고 조정해야 할 수 있음
+라이다(YDLIDAR G2)가 차량 자외선차단 필름의 근적외선을 통과 못해서, 가시광선
+카메라 + 딥러닝 방식으로 교체했습니다.
+
+실기(라즈베리파이4)에서 탐지+깊이 두 모델의 NCNN 변환/추론이 정상 동작하고
+PyTorch 직접 로드 대비 체감 속도가 개선됨을 확인했습니다.
+
+참고:
+- 최초 실행 시 각 모델마다 "PyTorch 로드 -> NCNN으로 export -> 다시 로드"
+  과정을 한 번 거치므로 첫 실행이 평소보다 오래 걸립니다. 이후 실행부터는
+  이미 변환된 <모델명>_ncnn_model 폴더를 바로 불러오므로 빠릅니다.
 """
 
+import os
+
+import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 
 import config
+from services.sony_qx10_capture import SonyQX10Capture
 
 try:
     import cv2
@@ -41,172 +47,196 @@ try:
 except ImportError:
     YOLO = None
 
-from services.sony_qx10_capture import SonyQX10Capture
+
+# COCO 클래스 중 관심 있는 것만 (차량류 + 사람). 다른 클래스는 탐지돼도 무시.
+RELEVANT_CLASS_NAMES = {"person", "car", "truck", "bus", "motorcycle", "bicycle"}
 
 
 class CameraDepthReaderThread(QThread):
-    scan_updated = pyqtSignal(list)   # [(angle_deg, distance_m), ...] - 물체 단위
+    # [(angle_deg, distance_m), ...] - 물체 하나당 하나씩
+    scan_updated = pyqtSignal(list)
     connection_error = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._running = False
+        self._detect_model = None
+        self._depth_model = None
+        self._depth_attr_warned = False
 
     def run(self):
-        if cv2 is None:
-            self.connection_error.emit("opencv-python이 설치되어 있지 않습니다 (pip install opencv-python)")
-            return
-        if YOLO is None:
-            self.connection_error.emit("ultralytics가 설치되어 있지 않습니다 (pip install ultralytics)")
-            return
-
         self._running = True
 
-        while self._running:
-            if self._connect_and_run():
-                pass
-            if self._running:
-                self.msleep(int(config.CAMERA_DEPTH_UPDATE_INTERVAL_SEC * 1000 * 10))  # 실패 시 좀 더 길게 대기
+        if cv2 is None:
+            self.connection_error.emit("opencv-python이 설치되어 있지 않습니다.")
+            return
+        if YOLO is None:
+            self.connection_error.emit("ultralytics가 설치되어 있지 않습니다.")
+            return
 
+        while self._running:
+            self._connect_and_run()
+            if self._running:
+                self.msleep(int(config.CAMERA_RECONNECT_INTERVAL_SEC * 1000))
+
+    # ---------------------------------------------------------------
+    # NCNN 변환/로딩 (V1과 다른 부분은 여기뿐)
+    # ---------------------------------------------------------------
+    def _ncnn_model_dir(self, pt_path: str) -> str:
+        """Ultralytics의 export(format="ncnn") 명명 규칙: <이름>_ncnn_model 폴더."""
+        base_dir = os.path.dirname(pt_path)
+        stem = os.path.splitext(os.path.basename(pt_path))[0]
+        return os.path.join(base_dir, f"{stem}_ncnn_model")
+
+    def _load_or_export_ncnn(self, pt_path: str):
+        """이미 변환된 NCNN 모델 폴더가 있으면 바로 로드, 없으면 .pt를 먼저
+        로드해서 export(format="ncnn")로 변환한 뒤 그 결과를 로드한다."""
+        ncnn_dir = self._ncnn_model_dir(pt_path)
+
+        if os.path.isdir(ncnn_dir):
+            self.connection_error.emit(f"NCNN 모델 로드 중(기존 변환본 사용): {ncnn_dir}")
+            return YOLO(ncnn_dir)
+
+        self.connection_error.emit(f"NCNN 변환본이 없어 새로 변환합니다: {pt_path} -> {ncnn_dir}")
+        pt_model = YOLO(pt_path)
+        exported_path = pt_model.export(format="ncnn")
+        # export()가 반환하는 경로가 폴더 자체이거나 그 안의 파일일 수 있어
+        # 방어적으로 실제 폴더 경로를 다시 계산해서 사용
+        load_path = exported_path if os.path.isdir(exported_path) else ncnn_dir
+        self.connection_error.emit(f"NCNN 변환 완료, 로드 중: {load_path}")
+        return YOLO(load_path)
+
+    def _load_models(self) -> bool:
+        try:
+            if self._detect_model is None:
+                self._detect_model = self._load_or_export_ncnn(config.CAMERA_DETECT_MODEL_PATH)
+            if self._depth_model is None:
+                self._depth_model = self._load_or_export_ncnn(config.CAMERA_DEPTH_MODEL_PATH)
+            return True
+        except Exception as exc:
+            self.connection_error.emit(f"모델 로드/변환 실패: {type(exc).__name__}: {exc}")
+            return False
+
+    # ---------------------------------------------------------------
+    # 아래는 원본(camera_depth_reader.py)과 동일한 처리 로직
+    # ---------------------------------------------------------------
     def _open_camera(self):
         """config.CAMERA_SOURCE에 따라 일반 USB 웹캠 또는 소니 QX10
-        Wi-Fi 라이브뷰를 연다. 둘 다 cv2.VideoCapture와 같은
-        isOpened()/read() 인터페이스라 이후 코드는 동일하게 씀."""
-        source = getattr(config, "CAMERA_SOURCE", "usb")
-        if source == "sony_qx10":
+        Wi-Fi 라이브뷰를 연다. 둘 다 isOpened()/read() 인터페이스가 같음."""
+        if config.CAMERA_SOURCE == "sony_qx10":
             cap = SonyQX10Capture(
-                discovery_timeout_sec=getattr(config, "SONY_QX10_DISCOVERY_TIMEOUT_SEC", 5.0),
-                fixed_endpoint_url=getattr(config, "SONY_QX10_FIXED_ENDPOINT_URL", None),
+                discovery_timeout_sec=config.SONY_QX10_DISCOVERY_TIMEOUT_SEC,
+                fixed_endpoint_url=config.SONY_QX10_FIXED_ENDPOINT_URL,
             )
             cap.open()
             return cap
         return cv2.VideoCapture(config.CAMERA_INDEX)
 
-    def _connect_and_run(self) -> bool:
+    def _connect_and_run(self):
+        if not self._load_models():
+            return
+
         cap = self._open_camera()
         if cap is None or not cap.isOpened():
-            self.connection_error.emit(
-                f"카메라를 열 수 없습니다 (source={getattr(config, 'CAMERA_SOURCE', 'usb')})")
-            return False
+            self.connection_error.emit(f"카메라를 열 수 없습니다 (source={config.CAMERA_SOURCE})")
+            return
 
-        try:
-            model = YOLO(config.CAMERA_DEPTH_MODEL_PATH)
-        except Exception as exc:
-            self.connection_error.emit(f"YOLO26-Depth 모델 로드 실패: {type(exc).__name__}: {exc}")
-            cap.release()
-            return False
-
-        self.connection_error.emit("카메라+깊이추정 모델 준비 완료, 추론 시작")
+        self.connection_error.emit("카메라 연결 및 추론 시작됨 (NCNN)")
 
         try:
             while self._running:
                 ok, frame = cap.read()
-                if not ok:
-                    self.connection_error.emit("카메라 프레임 읽기 실패")
-                    break
+                if not ok or frame is None:
+                    self.connection_error.emit("프레임 읽기 실패, 재연결 시도")
+                    return
 
-                depth_map = self._run_inference(model, frame)
-                if depth_map is not None:
-                    objects = self._extract_objects_from_depth_map(depth_map)
-                    self.scan_updated.emit(objects)
+                objects = self._process_frame(frame)
+                self.scan_updated.emit(objects)
 
                 self.msleep(int(config.CAMERA_DEPTH_UPDATE_INTERVAL_SEC * 1000))
         except Exception as exc:
-            self.connection_error.emit(f"카메라/추론 중 오류: {type(exc).__name__}: {exc}")
+            self.connection_error.emit(f"추론 중 오류: {type(exc).__name__}: {exc}")
         finally:
             cap.release()
 
-        return True
+    def _process_frame(self, frame: np.ndarray) -> list:
+        height, width = frame.shape[:2]
 
-    def _run_inference(self, model, frame):
-        """YOLO26-Depth로 프레임 전체의 픽셀별 깊이맵(미터, 2D 배열)을 얻는다.
-        주의: ultralytics 버전에 따라 결과 객체의 속성명이 다를 수 있어,
-        실기에서 print(result)로 실제 구조를 한번 확인해보는 걸 권장."""
-        try:
-            results = model.predict(frame, verbose=False)
-            result = results[0]
-            # ultralytics depth 결과의 관례적 속성명(버전에 따라 다를 수 있음)
-            depth_map = getattr(result, "depth", None)
-            if depth_map is None:
-                depth_map = getattr(result, "depths", None)
-            if depth_map is None:
+        detections = self._run_detection(frame)
+        if not detections:
+            return []
+
+        depth_map = self._run_depth(frame)
+        if depth_map is None:
+            return []
+
+        results = []
+        for x1, y1, x2, y2, _label in detections:
+            distance_m = self._box_distance(depth_map, x1, y1, x2, y2)
+            if distance_m is None:
+                continue
+
+            center_x = (x1 + x2) / 2
+            fraction = center_x / max(1, width - 1)   # 0.0(왼쪽 끝) ~ 1.0(오른쪽 끝)
+            angle_deg = (fraction - 0.5) * config.CAMERA_HORIZONTAL_FOV_DEG
+            angle_deg += config.CAMERA_ANGLE_OFFSET_DEG
+
+            results.append((angle_deg, distance_m))
+
+        return results
+
+    def _run_detection(self, frame: np.ndarray) -> list:
+        """탐지 모델로 관심 클래스(차량/사람)의 바운딩박스 목록을 반환.
+        반환: [(x1, y1, x2, y2, label), ...] (픽셀 좌표)"""
+        result = self._detect_model.predict(frame, verbose=False)[0]
+        names = result.names
+
+        boxes = []
+        for box in result.boxes:
+            cls_id = int(box.cls[0])
+            label = names[cls_id] if not isinstance(names, dict) else names.get(cls_id, str(cls_id))
+            if label not in RELEVANT_CLASS_NAMES:
+                continue
+            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
+            boxes.append((x1, y1, x2, y2, label))
+        return boxes
+
+    def _run_depth(self, frame: np.ndarray):
+        """깊이 모델로 픽셀별 깊이맵(미터)을 반환. 실패하면 None.
+
+        ultralytics의 Results.depth는 DepthMap 객체(BaseTensor 상속)이고,
+        실제 torch.Tensor/np.ndarray는 그 .data 속성에 들어있음."""
+        result = self._depth_model.predict(frame, verbose=False)[0]
+
+        depth = getattr(result, "depth", None)
+        if depth is None:
+            if not self._depth_attr_warned:
+                self._depth_attr_warned = True
+                attrs = [a for a in dir(result) if not a.startswith("_")]
                 self.connection_error.emit(
-                    "깊이맵 속성을 못 찾았습니다 - ultralytics 버전에 맞게 "
-                    "_run_inference()의 속성명을 조정해야 합니다")
-                return None
-            return depth_map
-        except Exception as exc:
-            self.connection_error.emit(f"추론 실패: {type(exc).__name__}: {exc}")
+                    f"result.depth가 없습니다 (NCNN 백엔드에서 다르게 나올 수 있음). "
+                    f"result 속성들: {attrs}")
             return None
 
-    def _extract_objects_from_depth_map(self, depth_map) -> list:
-        """깊이맵(2D 배열, [row][col] = 미터)을 물체 단위 (각도,거리) 리스트로 변환."""
-        height = len(depth_map)
-        if height == 0:
-            return []
-        width = len(depth_map[0])
-        if width == 0:
-            return []
+        data = getattr(depth, "data", depth)  # DepthMap.data가 실제 텐서
+        arr = data.cpu().numpy() if hasattr(data, "cpu") else np.asarray(data)
+        if arr.ndim == 3:
+            arr = arr[0]
+        return arr
 
-        roi_top = int(height * config.CAMERA_ROI_TOP_FRAC)
-        roi_bottom = int(height * config.CAMERA_ROI_BOTTOM_FRAC)
-        roi_top, roi_bottom = max(0, roi_top), min(height, roi_bottom)
-        if roi_bottom <= roi_top:
-            roi_top, roi_bottom = 0, height
+    @staticmethod
+    def _box_distance(depth_map: np.ndarray, x1: int, y1: int, x2: int, y2: int):
+        h, w = depth_map.shape[:2]
+        x1, x2 = max(0, x1), min(w, x2)
+        y1, y2 = max(0, y1), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return None
 
-        # 각 열의 최소 깊이(=그 방향에서 가장 가까운 장애물)
-        column_min_depth = []
-        for col in range(width):
-            best = None
-            for row in range(roi_top, roi_bottom):
-                d = depth_map[row][col]
-                if d is None or d <= 0:
-                    continue
-                if d > config.CAMERA_DEPTH_MAX_RANGE_M:
-                    continue
-                if best is None or d < best:
-                    best = d
-            column_min_depth.append(best)
-
-        # 인접 열을 깊이 비슷한 것끼리 클러스터링
-        clusters = []
-        current_cluster = []
-        for col, depth in enumerate(column_min_depth):
-            if depth is None:
-                if current_cluster:
-                    clusters.append(current_cluster)
-                    current_cluster = []
-                continue
-            if current_cluster:
-                last_depth = column_min_depth[current_cluster[-1]]
-                if abs(depth - last_depth) > config.OBJECT_CLUSTER_DEPTH_TOLERANCE_M:
-                    clusters.append(current_cluster)
-                    current_cluster = []
-            current_cluster.append(col)
-        if current_cluster:
-            clusters.append(current_cluster)
-
-        objects = []
-        for cluster in clusters:
-            if len(cluster) < config.OBJECT_MIN_CLUSTER_WIDTH_PX:
-                continue
-            center_col = sum(cluster) / len(cluster)
-            depths_in_cluster = [column_min_depth[c] for c in cluster]
-            representative_depth = min(depths_in_cluster)  # 제일 가까운 지점 기준(안전 마진)
-
-            # 최대거리 근처는 "감지된 물체"가 아니라 그냥 뻥 뚫린 먼 도로일
-            # 가능성이 높아서 제외 (화면에 불필요한 마름모가 안 뜨게)
-            if representative_depth >= config.CAMERA_DEPTH_MAX_RANGE_M * 0.95:
-                continue
-
-            fraction = center_col / max(1, width - 1)  # 0.0(왼쪽) ~ 1.0(오른쪽)
-            angle = (-config.CAMERA_HORIZONTAL_FOV_DEG / 2
-                     + fraction * config.CAMERA_HORIZONTAL_FOV_DEG
-                     + config.CAMERA_ANGLE_OFFSET_DEG)
-
-            objects.append((angle, representative_depth))
-
-        return objects
+        region = depth_map[y1:y2, x1:x2]
+        valid = region[region > 0]
+        if valid.size == 0:
+            return None
+        return float(np.median(valid))
 
     def stop(self):
         self._running = False

@@ -41,10 +41,10 @@ class PFDViewModel(QObject):
         self._ahrs_last_time = None
         self._smoothed_roll = 0.0
         self._smoothed_pitch = 0.0
+        self._smoothed_yaw = 0.0
 
         # 속도 표시 애니메이션용 타이머 - CAN 데이터 도착 빈도와 무관하게
-        # 고정 주기로 표시값을 목표치 쪽으로 조금씩 이동시킴
-        self._speed_anim_last_time = None
+        # 고정 주기로 표시값을 목표치 쪽으로 EMA(지수감쇠)로 부드럽게 수렴시킴
         self._speed_anim_timer = QTimer(self)
         self._speed_anim_timer.timeout.connect(self._on_speed_animation_tick)
         self._speed_anim_timer.start(int(1000 / config.FRAME_RATE_HZ))
@@ -88,7 +88,13 @@ class PFDViewModel(QObject):
 
         self.attitude.roll_deg = self._smoothed_roll
         self.attitude.pitch_deg = self._smoothed_pitch
-        self.attitude.yaw_deg = yaw_deg
+
+        # 요(yaw)도 EMA 스무딩. 0<->360도 경계를 최단각도로 계산해서 래핑 처리
+        # (예: 359도->1도는 실제로 2도 변화인데 그냥 평균내면 358도 변화로
+        # 잘못 계산되는 문제 방지)
+        yaw_delta = ((yaw_deg - self._smoothed_yaw + 180) % 360) - 180
+        self._smoothed_yaw = (self._smoothed_yaw + yaw_delta * config.YAW_SMOOTHING_ALPHA) % 360
+        self.attitude.yaw_deg = self._smoothed_yaw
 
     # ---- services.imu_reader.ImuReaderThread.feature_check_updated 에 연결 ----
     def on_imu_feature_check(self, confirmed: bool):
@@ -101,24 +107,11 @@ class PFDViewModel(QObject):
         self.vehicle.speed_kph_target = value
 
     def _on_speed_animation_tick(self):
-        now = time.monotonic()
-        if self._speed_anim_last_time is None:
-            dt = 1.0 / config.FRAME_RATE_HZ
-        else:
-            dt = now - self._speed_anim_last_time
-        self._speed_anim_last_time = now
-
         current = self.vehicle.speed_kph
         target = self.vehicle.speed_kph_target
-        diff = target - current
 
-        max_step = config.SPEED_ANIMATION_MAX_RATE_KPH_PER_SEC * dt
         self.vehicle.prev_speed_kph = current
-
-        if abs(diff) <= max_step:
-            self.vehicle.speed_kph = target
-        else:
-            self.vehicle.speed_kph = current + max_step * (1 if diff > 0 else -1)
+        self.vehicle.speed_kph += config.SPEED_SMOOTHING_ALPHA * (target - current)
 
     def on_altitude_updated(self, value: float):
         """추후 고도 센서 연동 시 사용. 지금은 아무 곳에서도 호출 안 됨(항상 0)."""

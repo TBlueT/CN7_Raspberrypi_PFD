@@ -47,19 +47,12 @@ CAMERA_INDEX = 0
 SONY_QX10_DISCOVERY_TIMEOUT_SEC = 5.0
 SONY_QX10_FIXED_ENDPOINT_URL = None
 CAMERA_HORIZONTAL_FOV_DEG = 75.0     # 쓰시는 웹캠 스펙에 맞춰 조정
-CAMERA_DEPTH_MODEL_PATH = "yolo26n-depth.pt"
+CAMERA_DETECT_MODEL_PATH = "yolo26n.pt"          # 차량/사람 탐지(바운딩박스+클래스)
+CAMERA_DEPTH_MODEL_PATH = "yolo26n-depth.pt"      # 픽셀별 깊이맵(미터)
+CAMERA_RECONNECT_INTERVAL_SEC = 2.0
 CAMERA_DEPTH_MAX_RANGE_M = 8.0       # 화면 가장자리(ND_RADIUS)에 대응하는 거리
 CAMERA_DEPTH_UPDATE_INTERVAL_SEC = 0.1   # RPi4 실측 후 조정 (추론이 느리면 늘리기)
 CAMERA_ANGLE_OFFSET_DEG = 0.0            # 카메라 장착 방향 보정용
-
-# 깊이맵에서 도로/장애물 영역만 보게, 세로 방향 관심영역(위:하늘/대시보드
-# 제외, 아래:보닛 제외) 비율. 0.0=맨 위, 1.0=맨 아래
-CAMERA_ROI_TOP_FRAC = 0.35
-CAMERA_ROI_BOTTOM_FRAC = 0.75
-
-# 물체 클러스터링 (TCAS 스타일 - 점 구름 대신 물체 단위로 묶어서 표시)
-OBJECT_CLUSTER_DEPTH_TOLERANCE_M = 1.0   # 이 안이면 "같은 물체"로 묶음
-OBJECT_MIN_CLUSTER_WIDTH_PX = 8           # 노이즈 제거용 최소 폭(픽셀 컬럼 수)
 
 
 # ---- EBIMU-9DOFV5-R3 시리얼 설정 ----
@@ -79,7 +72,9 @@ OBD_RECONNECT_INTERVAL_SEC = 0.1
 # ---- 속도 표시 애니메이션 ----
 # CAN에서 새 속도값이 뜨문뜨문 와도(수백ms 간격), 화면 표시값은 매 프레임
 # 이 속도(초당 km/h)로만 목표치를 향해 부드럽게 움직임
-SPEED_ANIMATION_MAX_RATE_KPH_PER_SEC = 40.0
+# 속도 표시를 EMA(지수감쇠) 방식으로 부드럽게 (롤/피치와 같은 방식 -
+# 목표치에 가까워질수록 자연스럽게 감속하며 수렴, 등속+급정지 없음)
+SPEED_SMOOTHING_ALPHA = 0.08
 
 # ---- 인포카 BLE 연결 정보 (ble_scan.py로 확인됨) ----
 OBD_BLE_ADDRESS = "66:1E:11:14:04:63"     # Infocar-OH-03, 재스캔 시 바뀔 수 있으니 안 붙으면 ble_scan.py 재실행
@@ -134,6 +129,11 @@ MAHONY_KI = 0.0
 # 1.0이면 스무딩 없음(원값 그대로), 작을수록 더 부드럽지만 반응은 느려짐.
 ROLL_SMOOTHING_ALPHA = 0.7
 PITCH_SMOOTHING_ALPHA = 0.7
+
+# 요(yaw)는 Mahony 필터를 안 거치고 EBIMU 지자기 출력을 그대로 쓰는데,
+# 차량 실내 금속/전자기기로 인한 자기간섭 노이즈가 그대로 나올 수 있어서
+# 여기서 별도로 EMA 스무딩. 0/360도 경계를 최단각도로 계산해서 래핑 처리함.
+YAW_SMOOTHING_ALPHA = 0.5
 
 # ---- 색상 (B737 스타일) ----
 COLOR_SKY = "#1f5fa8"

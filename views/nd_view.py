@@ -14,7 +14,7 @@ viewmodels.nd_viewmodel.NDViewModel만 읽어서 그립니다.
 import math
 
 from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer
-from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPolygonF, QFont, QPainterPath
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPolygonF, QFont, QPainterPath, QPixmap
 from PyQt6.QtWidgets import QWidget
 
 import config
@@ -36,14 +36,18 @@ class NDView(QWidget):
         self._font_small = QFont("sans-serif", 8)
         self._font_value = QFont("sans-serif", 12, QFont.Weight.Medium)
 
+        # 절대 안 바뀌는 배경(반원, 거리 링, 라벨, 시야각 점선, 헤딩박스
+        # 테두리+고정 라벨)은 한 번만 그려서 캐싱해두고, 매 프레임은 이걸
+        # 그대로 붙여넣기만 함 (도형/삼각함수 재계산 없음)
+        self._background_pixmap = self._render_background()
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor(config.COLOR_BLACK))
 
-        self._draw_range_rings(painter)
-        self._draw_fov_boundary(painter)
-        self._draw_heading_box(painter)
+        painter.drawPixmap(0, 0, self._background_pixmap)
+
+        self._draw_heading_value(painter)
         if self.vm.scan.points:
             self._draw_objects(painter)
         else:
@@ -51,6 +55,20 @@ class NDView(QWidget):
         self._draw_label(painter)
 
         painter.end()
+
+    def _render_background(self) -> QPixmap:
+        """정적 배경 요소를 전부 그려서 QPixmap으로 반환. __init__에서 한 번만 호출됨."""
+        pixmap = QPixmap(config.PANEL_WIDTH, config.PANEL_HEIGHT)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.fillRect(pixmap.rect(), QColor(config.COLOR_BLACK))
+
+        self._draw_range_rings(painter)
+        self._draw_fov_boundary(painter)
+        self._draw_heading_box_static(painter)
+
+        painter.end()
+        return pixmap
 
     def _draw_range_rings(self, painter: QPainter):
         cx, cy = config.ND_CENTER
@@ -88,10 +106,11 @@ class NDView(QWidget):
         painter.drawLine(QPointF(cx - r, cy), QPointF(cx - r, cy - 4))
         painter.drawLine(QPointF(cx + r, cy), QPointF(cx + r, cy - 4))
 
-    def _draw_heading_box(self, painter: QPainter):
+    def _draw_heading_box_static(self, painter: QPainter):
+        """헤딩박스에서 안 바뀌는 부분만 (포인터 삼각형, 테두리, 090/270 라벨).
+        실제 헤딩 숫자는 매 프레임 _draw_heading_value()가 그 위에 덧그림."""
         cx, cy = config.ND_CENTER
         r = config.ND_RADIUS
-        heading = self.vm.heading_deg
 
         painter.setPen(QPen(QColor(config.COLOR_WHITE), 1))
         painter.setBrush(QBrush(QColor(config.COLOR_WHITE)))
@@ -106,9 +125,6 @@ class NDView(QWidget):
         painter.setPen(QPen(QColor(config.COLOR_TAPE_BORDER), 1))
         painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
         painter.drawRect(box_rect)
-        painter.setFont(self._font_value)
-        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
-        painter.drawText(box_rect, Qt.AlignmentFlag.AlignCenter, f"{int(round(heading)):03d}")
 
         painter.setFont(self._font_small)
         painter.setPen(QPen(QColor(config.COLOR_TAPE_TICK)))
@@ -116,6 +132,17 @@ class NDView(QWidget):
                           Qt.AlignmentFlag.AlignLeft, "090")
         painter.drawText(QRectF(cx + r - 25, cy - 18, 30, 16),
                           Qt.AlignmentFlag.AlignRight, "270")
+
+    def _draw_heading_value(self, painter: QPainter):
+        """헤딩 숫자만 매 프레임 새로 그림 (박스/테두리는 배경 캐시에 이미 있음)."""
+        cx, cy = config.ND_CENTER
+        r = config.ND_RADIUS
+        heading = self.vm.heading_deg
+
+        box_rect = QRectF(cx - 25, cy - r - 43, 50, 18)
+        painter.setFont(self._font_value)
+        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
+        painter.drawText(box_rect, Qt.AlignmentFlag.AlignCenter, f"{int(round(heading)):03d}")
 
     def _draw_fov_boundary(self, painter: QPainter):
         """카메라 시야각이 ND 반원(180도) 전체보다 좁으므로, 실제로 감지 가능한
