@@ -46,6 +46,10 @@ CAMERA_INDEX = 0
 # 형태 예: "http://192.168.122.1:8080/services/camera"
 SONY_QX10_DISCOVERY_TIMEOUT_SEC = 5.0
 SONY_QX10_FIXED_ENDPOINT_URL = None
+# 인터넷용 와이파이(wlan0)와 카메라용 와이파이(wlan1)가 동시에 연결되어
+# 있으면, 탐색 신호가 엉뚱한 인터페이스로 나갈 수 있어서 명시적으로 지정.
+# `ip link show`/`nmcli device status`로 실제 카메라가 붙은 인터페이스명 확인.
+SONY_QX10_WIFI_INTERFACE = "wlan1"
 CAMERA_HORIZONTAL_FOV_DEG = 75.0     # 쓰시는 웹캠 스펙에 맞춰 조정
 CAMERA_DETECT_MODEL_PATH = "yolo26n.pt"          # 차량/사람 탐지(바운딩박스+클래스)
 CAMERA_DEPTH_MODEL_PATH = "yolo26n-depth.pt"      # 픽셀별 깊이맵(미터)
