@@ -4,9 +4,11 @@ NDView (MVVM의 View)
 이전 NDWidget과 렌더링 로직은 동일하지만, 상태를 직접 들고 있지 않고
 viewmodels.nd_viewmodel.NDViewModel만 읽어서 그립니다.
 
-차량 정면 기준 180도(좌우 90도씩) 반원만 표시합니다. 라이다 각도 0도 = 정면
-(화면 위쪽)으로 가정. 실제 장착 방향이 다르면 config.LIDAR_ANGLE_OFFSET_DEG로
-보정하세요.
+라이다가 차량 자외선차단 필름을 통과 못해 카메라+YOLO26-Depth로 교체.
+점 구름 대신 실제 B737 TCAS(공중충돌방지) 화면처럼 물체 하나당 마름모
+하나 + 거리 숫자로 표시합니다. 카메라 시야각(config.CAMERA_HORIZONTAL_FOV_DEG)
+이 라이다 때(180도)보다 훨씬 좁아서, 그 범위 밖은 점선으로 "커버리지 경계"를
+표시합니다.
 """
 
 import math
@@ -40,9 +42,10 @@ class NDView(QWidget):
         painter.fillRect(self.rect(), QColor(config.COLOR_BLACK))
 
         self._draw_range_rings(painter)
+        self._draw_fov_boundary(painter)
         self._draw_heading_box(painter)
         if self.vm.scan.points:
-            self._draw_scan_points(painter)
+            self._draw_objects(painter)
         else:
             self._draw_scan_placeholder(painter)
         self._draw_label(painter)
@@ -65,7 +68,7 @@ class NDView(QWidget):
         painter.setPen(QPen(QColor(config.COLOR_ND_RING), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
-        max_range = getattr(config, "LIDAR_MAX_RANGE_M", 8.0)
+        max_range = config.CAMERA_DEPTH_MAX_RANGE_M
         painter.setFont(self._font_small)
         for frac in (1 / 3, 2 / 3, 1.0):
             ring_r = r * frac
@@ -114,32 +117,62 @@ class NDView(QWidget):
         painter.drawText(QRectF(cx + r - 25, cy - 18, 30, 16),
                           Qt.AlignmentFlag.AlignRight, "270")
 
-    def _draw_scan_points(self, painter: QPainter):
-        """정면 -90도~+90도 범위만 표시. 각도 0도 = 차량 정면(화면 위쪽) 가정.
-        실제 라이다 장착 방향에 따라 config.LIDAR_ANGLE_OFFSET_DEG로 보정."""
+    def _draw_fov_boundary(self, painter: QPainter):
+        """카메라 시야각이 ND 반원(180도) 전체보다 좁으므로, 실제로 감지 가능한
+        범위의 경계를 점선으로 표시해서 그 밖은 "커버리지 밖"임을 알려준다."""
         cx, cy = config.ND_CENTER
         r = config.ND_RADIUS
-        max_range = getattr(config, "LIDAR_MAX_RANGE_M", 8.0)
-        angle_offset = getattr(config, "LIDAR_ANGLE_OFFSET_DEG", 0.0)
+        half_fov = config.CAMERA_HORIZONTAL_FOV_DEG / 2
 
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor("#3DDC97")))
+        pen = QPen(QColor(config.COLOR_TAPE_TICK), 1, Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        for sign in (-1, 1):
+            theta = math.radians(90 - sign * half_fov)
+            x = cx + r * math.cos(theta)
+            y = cy - r * math.sin(theta)
+            painter.drawLine(QPointF(cx, cy), QPointF(x, y))
+
+    def _draw_objects(self, painter: QPainter):
+        """TCAS 스타일: 물체 하나당 마름모 하나 + 거리 숫자.
+        정면 -90도~+90도 범위만 표시. 각도 0도 = 차량 정면(화면 위쪽) 가정."""
+        cx, cy = config.ND_CENTER
+        r = config.ND_RADIUS
+        max_range = config.CAMERA_DEPTH_MAX_RANGE_M
+
+        painter.setFont(self._font_small)
         for angle_deg, distance_m in self.vm.scan.points:
-            adjusted = angle_deg + angle_offset
-            normalized = ((adjusted + 180) % 360) - 180
+            normalized = ((angle_deg + 180) % 360) - 180
             if not (-90 <= normalized <= 90):
                 continue
             if distance_m <= 0 or distance_m > max_range:
                 continue
+
             theta = math.radians(90 - normalized)
             radius_px = (distance_m / max_range) * r
-            x = cx - radius_px * math.cos(theta)  # 좌우 반전
+            x = cx - radius_px * math.cos(theta)  # 좌우 반전 (화면 기준)
             y = cy - radius_px * math.sin(theta)
-            painter.drawEllipse(QPointF(x, y), 2, 2)
+
+            self._draw_diamond(painter, x, y, distance_m)
 
         painter.setPen(QPen(QColor(config.COLOR_WHITE)))
         painter.setBrush(QBrush(QColor(config.COLOR_WHITE)))
         painter.drawEllipse(QPointF(cx, cy), 3, 3)
+
+    def _draw_diamond(self, painter: QPainter, x: float, y: float, distance_m: float):
+        size = 7
+        diamond = QPolygonF([
+            QPointF(x, y - size),
+            QPointF(x + size, y),
+            QPointF(x, y + size),
+            QPointF(x - size, y),
+        ])
+        painter.setPen(QPen(QColor(config.COLOR_WHITE), 1.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPolygon(diamond)
+
+        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
+        painter.drawText(QRectF(x - 20, y + size + 2, 40, 14),
+                          Qt.AlignmentFlag.AlignCenter, f"{distance_m:.0f}m")
 
     def _draw_scan_placeholder(self, painter: QPainter):
         """라이다 미연동 상태의 장식용 스캔 섹터."""
@@ -166,10 +199,10 @@ class NDView(QWidget):
         painter.drawRect(rect)
         painter.setFont(self._font_small)
         if points:
-            text = f"RADAR (2D LIDAR, {len(points)}pt)"
+            text = f"CAMERA DEPTH ({len(points)} obj)"
             color = "#9fe1cb"
         else:
-            text = "RADAR (2D LIDAR, 미연동)"
+            text = "CAMERA DEPTH (미연동)"
             color = config.COLOR_WARN_TEXT
         painter.setPen(QPen(QColor(color)))
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)

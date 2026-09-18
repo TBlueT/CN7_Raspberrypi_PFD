@@ -23,6 +23,8 @@ class NDViewModel(QObject):
     def on_heading_updated(self, yaw_deg: float):
         self.heading_deg = yaw_deg % 360.0
 
-    # ---- services.lidar_reader.LidarReaderThread.scan_updated 에 연결 ----
+    # ---- services.camera_depth_reader.CameraDepthReaderThread.scan_updated 에 연결 ----
+    # (예전 services.lidar_reader.LidarReaderThread.scan_updated 와 완전히 같은 인터페이스)
     def on_scan_updated(self, points: list):
+        """points: [(angle_deg, distance_m), ...] - 물체 하나당 하나씩"""
         self.scan.points = points

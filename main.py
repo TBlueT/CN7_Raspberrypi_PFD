@@ -25,7 +25,7 @@ from views.pfd_view import PFDView
 from views.nd_view import NDView
 from services.imu_reader import ImuReaderThread
 from services.can_reader import CanMonitorThread
-from services.lidar_reader import LidarReaderThread
+from services.camera_depth_reader import CameraDepthReaderThread
 
 
 class MainWindow(QMainWindow):
@@ -71,10 +71,10 @@ class MainWindow(QMainWindow):
         self.can_thread.connection_error.connect(self._on_can_error)
         self.can_thread.start()
 
-        self.lidar_thread = LidarReaderThread()
-        self.lidar_thread.scan_updated.connect(self.nd_vm.on_scan_updated)
-        self.lidar_thread.connection_error.connect(self._on_lidar_error)
-        self.lidar_thread.start()
+        self.camera_thread = CameraDepthReaderThread()
+        self.camera_thread.scan_updated.connect(self.nd_vm.on_scan_updated)
+        self.camera_thread.connection_error.connect(self._on_camera_error)
+        self.camera_thread.start()
 
     # ---- 에러 로깅 (콘솔 출력만 우선 처리) ----
     def _on_imu_error(self, message: str):
@@ -83,13 +83,13 @@ class MainWindow(QMainWindow):
     def _on_can_error(self, message: str):
         print(f"[CAN] {message}", file=sys.stderr)
 
-    def _on_lidar_error(self, message: str):
-        print(f"[LIDAR] {message}", file=sys.stderr)
+    def _on_camera_error(self, message: str):
+        print(f"[CAMERA] {message}", file=sys.stderr)
 
     def closeEvent(self, event):
         self.imu_thread.stop()
         self.can_thread.stop()
-        self.lidar_thread.stop()
+        self.camera_thread.stop()
         super().closeEvent(event)
 
 

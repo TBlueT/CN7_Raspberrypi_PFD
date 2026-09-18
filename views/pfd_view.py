@@ -217,7 +217,8 @@ class PFDView(QWidget):
 
     def _draw_vertical_tape(self, painter: QPainter, rect_tuple, value: float,
                              pixels_per_unit: float, tick_step: int,
-                             ticks_on_right: bool, value_format="{:.0f}"):
+                             ticks_on_right: bool, value_format="{:.0f}",
+                             slide_value_box: bool = False):
         x, y, w, h = rect_tuple
         rect = QRectF(x, y, w, h)
         painter.setPen(QPen(QColor(config.COLOR_TAPE_BORDER), 2))
@@ -262,14 +263,45 @@ class PFDView(QWidget):
         painter.drawRect(box_rect)
 
         painter.setFont(self._font_value)
+        if slide_value_box:
+            self._draw_sliding_value(painter, box_rect, value, value_format)
+        else:
+            painter.setPen(QPen(QColor(config.COLOR_BLACK)))
+            painter.drawText(box_rect, Qt.AlignmentFlag.AlignCenter, value_format.format(value))
+
+    def _draw_sliding_value(self, painter: QPainter, box_rect: QRectF,
+                             value: float, value_format: str):
+        """오도미터처럼, 정수값이 바뀔 때 위로 슬라이드하며 전환되는 효과.
+        예: 72 -> 73으로 바뀔 때 72가 위로 빠지면서 73이 아래에서 올라옴."""
+        base = math.floor(value)
+        frac = value - base   # 0.0 ~ 1.0, 다음 정수로의 진행률
+        box_h = box_rect.height()
+
+        painter.save()
+        painter.setClipRect(box_rect)
         painter.setPen(QPen(QColor(config.COLOR_BLACK)))
-        painter.drawText(box_rect, Qt.AlignmentFlag.AlignCenter, value_format.format(value))
+
+        offset_base = -frac * box_h
+        offset_next = box_h - frac * box_h
+
+        current_rect = QRectF(box_rect.x(), box_rect.y() + offset_base,
+                               box_rect.width(), box_h)
+        next_rect = QRectF(box_rect.x(), box_rect.y() + offset_next,
+                            box_rect.width(), box_h)
+
+        painter.drawText(current_rect, Qt.AlignmentFlag.AlignCenter,
+                          value_format.format(base))
+        painter.drawText(next_rect, Qt.AlignmentFlag.AlignCenter,
+                          value_format.format(base + 1))
+
+        painter.restore()
 
     def _draw_speed_tape(self, painter: QPainter):
         vehicle = self.vm.vehicle
         self._draw_vertical_tape(
             painter, config.SPEED_TAPE_RECT, vehicle.speed_kph,
-            config.SPEED_PIXELS_PER_UNIT, 5, ticks_on_right=False)
+            config.SPEED_PIXELS_PER_UNIT, 5, ticks_on_right=False,
+            slide_value_box=True)
 
         trend = vehicle.speed_kph - vehicle.prev_speed_kph
         if abs(trend) > 0.05:

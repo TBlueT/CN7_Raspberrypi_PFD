@@ -34,10 +34,32 @@ ND_CENTER = (200, 460)        # 반원의 밑변 중심점 (패널 하단 쪽)
 ND_RADIUS = 380
 
 # ---- YDLIDAR G2 ----
-LIDAR_SERIAL_PORT = "/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0"   # 실제 연결된 포트로 변경
-LIDAR_RECONNECT_INTERVAL_SEC = 2.0
-LIDAR_MAX_RANGE_M = 8.0              # 화면 가장자리(ND_RADIUS)에 대응하는 거리
-LIDAR_ANGLE_OFFSET_DEG = 0.0         # 라이다 장착 방향 보정용. 정면이 위로 안 보이면 조정
+# ---- 카메라 + YOLO26-Depth (라이다가 자외선차단필름을 못 뚫어서 교체) ----
+# CAMERA_SOURCE: "usb"(일반 웹캠, CAMERA_INDEX 사용) 또는
+# "sony_qx10"(Wi-Fi로 붙는 소니 렌즈카메라, 아래 SONY_QX10_* 사용)
+CAMERA_SOURCE = "sony_qx10"
+CAMERA_INDEX = 0
+
+# ---- 소니 DSC-QX10 (Wi-Fi 라이브뷰) ----
+# 지금은 SSDP 자동탐색을 우선 시도함. 같은 네트워크에서 탐색이 안 되면,
+# 카메라 IP를 직접 알아내서(QX10 자체 설정 화면 등) 아래에 고정 지정하세요.
+# 형태 예: "http://192.168.122.1:8080/services/camera"
+SONY_QX10_DISCOVERY_TIMEOUT_SEC = 5.0
+SONY_QX10_FIXED_ENDPOINT_URL = None
+CAMERA_HORIZONTAL_FOV_DEG = 75.0     # 쓰시는 웹캠 스펙에 맞춰 조정
+CAMERA_DEPTH_MODEL_PATH = "yolo26n-depth.pt"
+CAMERA_DEPTH_MAX_RANGE_M = 8.0       # 화면 가장자리(ND_RADIUS)에 대응하는 거리
+CAMERA_DEPTH_UPDATE_INTERVAL_SEC = 0.1   # RPi4 실측 후 조정 (추론이 느리면 늘리기)
+CAMERA_ANGLE_OFFSET_DEG = 0.0            # 카메라 장착 방향 보정용
+
+# 깊이맵에서 도로/장애물 영역만 보게, 세로 방향 관심영역(위:하늘/대시보드
+# 제외, 아래:보닛 제외) 비율. 0.0=맨 위, 1.0=맨 아래
+CAMERA_ROI_TOP_FRAC = 0.35
+CAMERA_ROI_BOTTOM_FRAC = 0.75
+
+# 물체 클러스터링 (TCAS 스타일 - 점 구름 대신 물체 단위로 묶어서 표시)
+OBJECT_CLUSTER_DEPTH_TOLERANCE_M = 1.0   # 이 안이면 "같은 물체"로 묶음
+OBJECT_MIN_CLUSTER_WIDTH_PX = 8           # 노이즈 제거용 최소 폭(픽셀 컬럼 수)
 
 
 # ---- EBIMU-9DOFV5-R3 시리얼 설정 ----
@@ -94,7 +116,6 @@ IMU_INIT_COMMANDS = [
     "<soa1>",
     "<ltf3>",
     "<ssa2>",
-    # "<sor10>",
 ]
 IMU_INIT_COMMAND_DELAY_SEC = 0.2   # 각 명령 사이 대기 시간
 
