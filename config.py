@@ -78,7 +78,7 @@ OBD_RECONNECT_INTERVAL_SEC = 0.1
 # 이 속도(초당 km/h)로만 목표치를 향해 부드럽게 움직임
 # 속도 표시를 EMA(지수감쇠) 방식으로 부드럽게 (롤/피치와 같은 방식 -
 # 목표치에 가까워질수록 자연스럽게 감속하며 수렴, 등속+급정지 없음)
-SPEED_SMOOTHING_ALPHA = 0.08
+SPEED_SMOOTHING_ALPHA = 0.04
 
 # ---- 인포카 BLE 연결 정보 (ble_scan.py로 확인됨) ----
 OBD_BLE_ADDRESS = "66:1E:11:14:04:63"     # Infocar-OH-03, 재스캔 시 바뀔 수 있으니 안 붙으면 ble_scan.py 재실행
@@ -126,7 +126,7 @@ IMU_STABILIZATION_CHECK_COMMAND = "<savc1>"
 # Kp: 가속도계로 자이로 드리프트를 보정하는 강도 (0에 가까울수록 자이로만
 # 신뢰해서 원심력에 안 흔들리지만 실제 기울기 반영은 느려짐)
 # Ki: 적분 보정 강도 (0.0이면 안 씀 - 기본값 권장)
-MAHONY_KP = 0.3
+MAHONY_KP = 0.2
 MAHONY_KI = 0.0
 
 # 필터로 계산한 값에 잔여 노이즈 제거용으로 추가로 얹는 가벼운 EMA 스무딩.
