@@ -102,8 +102,8 @@ IMU_EXTRA_FIELD_ORDER = ["gyro", "accel"]
 GYRO_UNIT_IS_DEG_PER_SEC = True
 
 # 자이로/가속도 각 축 부호가 실제 장착 방향과 안 맞으면 조정 (-1.0으로 반전)
-GYRO_SIGN = (1.0, -1.0, 1.0)   # (gx, gy, gz)
-ACCEL_SIGN = (1.0, -1.0, 1.0)  # (ax, ay, az)
+GYRO_SIGN = (1.0, 1.0, 1.0)   # (gx, gy, gz)
+ACCEL_SIGN = (1.0, 1.0, 1.0)  # (ax, ay, az)
 
 # ---- EBIMU 부팅/재연결 시 자동으로 보낼 초기화 명령 ----
 # "<sog1>": 자이로(각속도) 원시값 추가 출력. "<soa1>": 가속도 원시값(중력
