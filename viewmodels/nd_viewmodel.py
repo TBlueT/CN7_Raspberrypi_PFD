@@ -18,6 +18,9 @@ class NDViewModel(QObject):
         super().__init__(parent)
         self.heading_deg = 0.0
         self.scan = ScanModel()
+        # "disconnected" / "camera_error" / "connected" - 초기값은 아직
+        # 한 번도 연결 시도 결과를 못 받은 상태이므로 "disconnected"로 시작
+        self.connection_status = "disconnected"
 
     # ---- services.imu_reader.ImuReaderThread.attitude_updated 에 연결 (yaw만 사용) ----
     def on_heading_updated(self, yaw_deg: float):
@@ -28,3 +31,7 @@ class NDViewModel(QObject):
     def on_scan_updated(self, points: list):
         """points: [(angle_deg, distance_m), ...] - 물체 하나당 하나씩"""
         self.scan.points = points
+
+    # ---- services.camera_depth_reader.CameraDepthReaderThread.status_updated 에 연결 ----
+    def on_status_updated(self, status: str):
+        self.connection_status = status

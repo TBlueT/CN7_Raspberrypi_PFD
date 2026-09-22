@@ -73,6 +73,7 @@ class MainWindow(QMainWindow):
 
         self.camera_thread = CameraDepthReaderThread()
         self.camera_thread.scan_updated.connect(self.nd_vm.on_scan_updated)
+        self.camera_thread.status_updated.connect(self.nd_vm.on_status_updated)
         self.camera_thread.connection_error.connect(self._on_camera_error)
         self.camera_thread.start()
 

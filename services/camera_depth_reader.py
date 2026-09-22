@@ -55,6 +55,10 @@ RELEVANT_CLASS_NAMES = {"person", "car", "truck", "bus", "motorcycle", "bicycle"
 class CameraDepthReaderThread(QThread):
     # [(angle_deg, distance_m), ...] - 물체 하나당 하나씩
     scan_updated = pyqtSignal(list)
+    # "disconnected"(와이파이/카메라 네트워크 자체가 안 붙음),
+    # "camera_error"(연결은 되는데 카메라 스트림/API 문제),
+    # "connected"(정상 - 물체가 0개 감지돼도 이 상태임)
+    status_updated = pyqtSignal(str)
     connection_error = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -68,9 +72,11 @@ class CameraDepthReaderThread(QThread):
         self._running = True
 
         if cv2 is None:
+            self.status_updated.emit("camera_error")
             self.connection_error.emit("opencv-python이 설치되어 있지 않습니다.")
             return
         if YOLO is None:
+            self.status_updated.emit("camera_error")
             self.connection_error.emit("ultralytics가 설치되어 있지 않습니다.")
             return
 
@@ -135,19 +141,30 @@ class CameraDepthReaderThread(QThread):
 
     def _connect_and_run(self):
         if not self._load_models():
+            self.status_updated.emit("camera_error")
             return
 
         cap = self._open_camera()
         if cap is None or not cap.isOpened():
+            # SonyQX10Capture는 어느 단계에서 실패했는지 알려줌(discovery=
+            # 와이파이 문제, api/stream=카메라 자체 문제). USB 웹캠 등
+            # last_failure_stage가 없는 경우는 그냥 "카메라 연결 안됨"으로 취급.
+            failure_stage = getattr(cap, "last_failure_stage", None)
+            if failure_stage == "discovery":
+                self.status_updated.emit("disconnected")
+            else:
+                self.status_updated.emit("camera_error")
             self.connection_error.emit(f"카메라를 열 수 없습니다 (source={config.CAMERA_SOURCE})")
             return
 
+        self.status_updated.emit("connected")
         self.connection_error.emit("카메라 연결 및 추론 시작됨 (NCNN)")
 
         try:
             while self._running:
                 ok, frame = cap.read()
                 if not ok or frame is None:
+                    self.status_updated.emit("camera_error")
                     self.connection_error.emit("프레임 읽기 실패, 재연결 시도")
                     return
 
@@ -156,6 +173,7 @@ class CameraDepthReaderThread(QThread):
 
                 self.msleep(int(config.CAMERA_DEPTH_UPDATE_INTERVAL_SEC * 1000))
         except Exception as exc:
+            self.status_updated.emit("camera_error")
             self.connection_error.emit(f"추론 중 오류: {type(exc).__name__}: {exc}")
         finally:
             cap.release()

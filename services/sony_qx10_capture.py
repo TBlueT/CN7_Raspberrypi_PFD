@@ -53,13 +53,16 @@ class SonyQX10Capture:
         return self._opened
 
     def open(self) -> bool:
+        self.last_failure_stage = None
         try:
             api_endpoint = self._fixed_endpoint_url or self._discover_camera()
             if not api_endpoint:
+                self.last_failure_stage = "discovery"   # 와이파이/네트워크 문제
                 return False
 
             liveview_url = self._start_liveview(api_endpoint)
             if not liveview_url:
+                self.last_failure_stage = "api"   # 와이파이는 되는데 카메라 API 문제
                 return False
 
             parsed = urllib.parse.urlparse(liveview_url)
@@ -75,6 +78,7 @@ class SonyQX10Capture:
             return True
         except (OSError, http.client.HTTPException) as exc:
             print(f"[SonyQX10] 연결 실패: {type(exc).__name__}: {exc}")
+            self.last_failure_stage = "stream"   # 연결 도중 끊김 - 카메라 쪽 문제로 취급
             return False
 
     def __init__(self, discovery_timeout_sec: float = 5.0,
@@ -86,6 +90,9 @@ class SonyQX10Capture:
         self._conn = None
         self._stream_response = None
         self._opened = False
+        # 어느 단계에서 실패했는지 기록: "discovery"(와이파이/네트워크 문제),
+        # "api"/"stream"(와이파이는 되는데 카메라 자체 문제), None(성공)
+        self.last_failure_stage = None
 
     def _discover_camera(self):
         """SSDP M-SEARCH로 카메라를 찾아서 Camera Remote API 액션 URL을 반환.

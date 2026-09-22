@@ -35,6 +35,7 @@ class NDView(QWidget):
 
         self._font_small = QFont("sans-serif", 8)
         self._font_value = QFont("sans-serif", 12, QFont.Weight.Medium)
+        self._font_flag = QFont("sans-serif", 18, QFont.Weight.Bold)
 
         # 절대 안 바뀌는 배경(반원, 거리 링, 라벨, 시야각 점선, 헤딩박스
         # 테두리+고정 라벨)은 한 번만 그려서 캐싱해두고, 매 프레임은 이걸
@@ -48,13 +49,38 @@ class NDView(QWidget):
         painter.drawPixmap(0, 0, self._background_pixmap)
 
         self._draw_heading_value(painter)
-        if self.vm.scan.points:
+        if self.vm.connection_status == "connected":
             self._draw_objects(painter)
+            self._draw_top_label(painter)
         else:
-            self._draw_scan_placeholder(painter)
-        self._draw_label(painter)
+            # 실제 항공기 레이더/EFIS 관례: 신호 없음/고장 시 화면 구석 작은
+            # 글씨가 아니라 화면 중앙에 큼직하게 표시해서 놓칠 수 없게 함
+            self._draw_center_failure_flag(painter)
 
         painter.end()
+
+    def _draw_center_failure_flag(self, painter: QPainter):
+        cx, cy = config.ND_CENTER
+        r = config.ND_RADIUS
+        # 반원 안쪽(하늘 부분)의 세로 중앙 정도에 배치
+        center_y = cy - r * 0.55
+
+        text = "카메라 연결 안됨" if self.vm.connection_status == "disconnected" else "안됨"
+
+        painter.setFont(self._font_flag)
+        painter.setPen(QPen(QColor(config.COLOR_WARN_TEXT)))
+        painter.drawText(QRectF(cx - 150, center_y - 20, 300, 40),
+                          Qt.AlignmentFlag.AlignCenter, text)
+
+    def _draw_top_label(self, painter: QPainter):
+        count = len(self.vm.scan.points)
+        rect = QRectF(8, 8, config.PANEL_WIDTH - 16, 18)
+        painter.setPen(QPen(QColor(config.COLOR_TAPE_BORDER), 1))
+        painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
+        painter.drawRect(rect)
+        painter.setFont(self._font_small)
+        painter.setPen(QPen(QColor("#9fe1cb")))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"CAMERA DEPTH ({count} obj)")
 
     def _render_background(self) -> QPixmap:
         """정적 배경 요소를 전부 그려서 QPixmap으로 반환. __init__에서 한 번만 호출됨."""
@@ -200,52 +226,3 @@ class NDView(QWidget):
         painter.setPen(QPen(QColor(config.COLOR_WHITE)))
         painter.drawText(QRectF(x - 20, y + size + 2, 40, 14),
                           Qt.AlignmentFlag.AlignCenter, f"{distance_m:.0f}m")
-
-    def _draw_scan_placeholder(self, painter: QPainter):
-        """라이다 미연동 상태의 장식용 스캔 섹터."""
-        cx, cy = config.ND_CENTER
-        r = config.ND_RADIUS
-
-        painter.setPen(QPen(QColor("#1D9E75"), 2))
-        painter.drawLine(QPointF(cx, cy), QPointF(cx, cy - r * 0.85))
-
-        sector = _PlaceholderSector(cx, cy, r)
-        painter.setBrush(QBrush(QColor(30, 158, 117, 30)))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawPolygon(sector.polygon())
-
-        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
-        painter.setBrush(QBrush(QColor(config.COLOR_WHITE)))
-        painter.drawEllipse(QPointF(cx, cy), 3, 3)
-
-    def _draw_label(self, painter: QPainter):
-        points = self.vm.scan.points
-        rect = QRectF(8, 8, config.PANEL_WIDTH - 16, 18)
-        painter.setPen(QPen(QColor(config.COLOR_TAPE_BORDER), 1))
-        painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
-        painter.drawRect(rect)
-        painter.setFont(self._font_small)
-        if points:
-            text = f"CAMERA DEPTH ({len(points)} obj)"
-            color = "#9fe1cb"
-        else:
-            text = "CAMERA DEPTH (미연동)"
-            color = config.COLOR_WARN_TEXT
-        painter.setPen(QPen(QColor(color)))
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
-
-
-class _PlaceholderSector:
-    """장식용 부채꼴 섹터 좌표 계산 헬퍼 (라이다 연동 전까지만 사용)."""
-
-    def __init__(self, cx, cy, r, half_angle_deg=30):
-        self._cx, self._cy, self._r, self._half = cx, cy, r * 0.85, half_angle_deg
-
-    def polygon(self) -> QPolygonF:
-        points = [QPointF(self._cx, self._cy)]
-        for deg in range(-self._half, self._half + 1, 5):
-            theta = math.radians(90 - deg)
-            x = self._cx + self._r * math.cos(theta)
-            y = self._cy - self._r * math.sin(theta)
-            points.append(QPointF(x, y))
-        return QPolygonF(points)
