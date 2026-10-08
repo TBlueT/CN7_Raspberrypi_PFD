@@ -114,7 +114,10 @@ class NDView(QWidget):
 
         max_range = config.CAMERA_DEPTH_MAX_RANGE_M
         painter.setFont(self._font_small)
-        for frac in (1 / 3, 2 / 3, 1.0):
+        step = config.ND_RANGE_RING_STEP_M
+        ring_count = max(1, int(round(max_range / step)))
+        for i in range(1, ring_count + 1):
+            frac = min(1.0, i * step / max_range)
             ring_r = r * frac
             ring_rect = QRectF(cx - ring_r, cy - ring_r, ring_r * 2, ring_r * 2)
             painter.setPen(QPen(QColor(config.COLOR_ND_RING), 1))

@@ -53,7 +53,8 @@ SONY_QX10_WIFI_INTERFACE = "wlan1"
 CAMERA_HORIZONTAL_FOV_DEG = 75.0     # 쓰시는 웹캠 스펙에 맞춰 조정
 CAMERA_DETECT_MODEL_PATH = "yolo26n.pt"          # 차량/사람 탐지(바운딩박스+클래스)
 CAMERA_RECONNECT_INTERVAL_SEC = 2.0
-CAMERA_DEPTH_MAX_RANGE_M = 8.0       # 화면 가장자리(ND_RADIUS)에 대응하는 거리
+CAMERA_DEPTH_MAX_RANGE_M = 50.0      # 화면 가장자리(ND_RADIUS)에 대응하는 거리
+ND_RANGE_RING_STEP_M = 10.0          # ND 거리 링 간격 (10, 20, 30 ... m)
 CAMERA_DEPTH_UPDATE_INTERVAL_SEC = 0.1   # RPi4 실측 후 조정 (추론이 느리면 늘리기)
 CAMERA_ANGLE_OFFSET_DEG = 0.0            # 카메라 장착 방향 보정용
 
