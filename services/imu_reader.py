@@ -202,7 +202,7 @@ class ImuReaderThread(QThread):
 
         try:
             roll = float(parts[0])
-            pitch = -float(parts[1])
+            pitch = float(parts[1])
             yaw = float(parts[2])
         except ValueError:
             return
