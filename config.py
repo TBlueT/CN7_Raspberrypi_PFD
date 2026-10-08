@@ -34,7 +34,7 @@ ND_CENTER = (200, 460)        # 반원의 밑변 중심점 (패널 하단 쪽)
 ND_RADIUS = 380
 
 # ---- YDLIDAR G2 ----
-# ---- 카메라 + YOLO26-Depth (라이다가 자외선차단필름을 못 뚫어서 교체) ----
+# ---- 카메라 + yolo26n 탐지 + Lite-Mono 깊이 (라이다가 자외선차단필름을 못 뚫어서 교체) ----
 # CAMERA_SOURCE: "usb"(일반 웹캠, CAMERA_INDEX 사용) 또는
 # "sony_qx10"(Wi-Fi로 붙는 소니 렌즈카메라, 아래 SONY_QX10_* 사용)
 CAMERA_SOURCE = "sony_qx10"
@@ -52,11 +52,35 @@ SONY_QX10_FIXED_ENDPOINT_URL = None
 SONY_QX10_WIFI_INTERFACE = "wlan1"
 CAMERA_HORIZONTAL_FOV_DEG = 75.0     # 쓰시는 웹캠 스펙에 맞춰 조정
 CAMERA_DETECT_MODEL_PATH = "yolo26n.pt"          # 차량/사람 탐지(바운딩박스+클래스)
-CAMERA_DEPTH_MODEL_PATH = "yolo26n-depth.pt"      # 픽셀별 깊이맵(미터)
 CAMERA_RECONNECT_INTERVAL_SEC = 2.0
 CAMERA_DEPTH_MAX_RANGE_M = 8.0       # 화면 가장자리(ND_RADIUS)에 대응하는 거리
 CAMERA_DEPTH_UPDATE_INTERVAL_SEC = 0.1   # RPi4 실측 후 조정 (추론이 느리면 늘리기)
 CAMERA_ANGLE_OFFSET_DEG = 0.0            # 카메라 장착 방향 보정용
+
+# ---- Lite-Mono-tiny 깊이 추정 (상대 깊이 → 기하학 거리로 미터 배율 자동 보정) ----
+
+import os as _os_cam
+_PROJECT_DIR = _os_cam.path.dirname(_os_cam.path.abspath(__file__))
+# 상대경로는 프로젝트 폴더 기준
+LITE_MONO_REPO_DIR = _os_cam.path.join(_PROJECT_DIR, "Lite-Mono")        # git clone 한 저장소 (networks 폴더 포함)
+LITE_MONO_WEIGHTS_DIR = _os_cam.path.join(_PROJECT_DIR, "lite-mono-tiny_640x192")  # encoder.pth, depth.pth
+LITE_MONO_MODEL_NAME = "lite-mono-tiny"
+# "torch": 저장소+pth 로 직접 실행 / "onnx": onnxruntime (없으면 최초 1회 자동 변환)
+# 라즈베리파이에서 둘 다 돌려보고 로그의 추론 ms 가 작은 쪽으로 선택
+LITE_MONO_RUNTIME = "torch"
+LITE_MONO_ONNX_PATH = None          # None 이면 <가중치폴더>/lite-mono-tiny.onnx
+LITE_MONO_NUM_THREADS = 4
+LITE_MONO_CROP = True               # 지평선 주변 640:192 띠만 잘라서 입력 (False: 전체를 찌그러뜨려 입력)
+LITE_MONO_HORIZON_IN_BAND = 0.45    # 잘라낸 띠 안에서 지평선 위치 (KITTI 기준 약 0.45)
+
+# ---- 기하학 거리 (Lite-Mono 배율 보정 기준) ----
+CAMERA_HEIGHT_M = 1.3               # 지면~카메라 렌즈 높이 (실측해서 입력)
+CAMERA_HORIZON_ROW_FRAC = 0.5       # 화면에서 지평선 높이 (0=위, 1=아래). 장착 후 맞추기
+CAMERA_BOTTOM_TRUNCATE_MARGIN_PX = 3
+# Lite-Mono 배율: None 이면 기하학 거리로 자동 보정(EMA). 값을 넣으면 고정 배율 사용
+LITE_MONO_FIXED_SCALE = None
+LITE_MONO_SCALE_EMA_ALPHA = 0.1
+CAMERA_TIMING_LOG_INTERVAL_SEC = 10.0   # 추론 시간 로그 주기 (0 이면 끔)
 
 
 # ---- EBIMU-9DOFV5-R3 시리얼 설정 ----

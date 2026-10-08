@@ -1,40 +1,33 @@
 """
-카메라 + YOLO 리더 스레드 (NCNN 변환 버전)
-
-모델을 라즈베리파이4 ARM CPU에 더 적합한 NCNN 포맷으로 변환해서 씁니다.
-
-왜: 라즈베리파이4의 GPU(VideoCore VI)는 PyTorch 텐서 연산을 가속할 공식
-경로가 없어서 "GPU 켜기"가 사실상 의미가 없습니다. 대신 Ultralytics 공식
-가이드가 추천하는 대로, ARM CPU에 최적화된 NCNN으로 변환하면 같은 CPU에서도
-더 빠르게 돌아갈 수 있습니다 (NCNN은 필요하면 Vulkan으로 GPU도 추가로 쓸 수
-있음).
+카메라 + 물체 탐지 + 깊이 추정 리더 스레드
 
 동작 순서:
-  1. 탐지 모델로 프레임에서 차량/사람 등을 탐지 (바운딩박스 + 클래스)
-  2. 깊이 모델로 같은 프레임의 픽셀별 깊이맵(미터) 추정
-  3. 각 탐지 박스 영역 안의 깊이값 중앙값 = 그 물체까지의 거리
-  4. 박스 중심의 화면 x좌표를 카메라 시야각 기준 각도로 변환
-  5. (angle_deg, distance_m) 리스트로 scan_updated 발행
-     - views.nd_view가 이 값을 받아 물체 하나당 마름모(TCAS 스타일)로 표시
+  1. 탐지 모델(yolo26n, NCNN)로 차량/사람 바운딩박스 + 클래스
+  2. Lite-Mono-tiny 로 상대 깊이맵 추정 (미터 배율은 기하학 거리로 보정)
+  3. 박스 영역 깊이 중앙값 = 물체 거리
+  4. 박스 중심 x좌표 → 카메라 시야각 기준 각도
+  5. [(angle_deg, distance_m), ...] 를 scan_updated 로 발행 → nd_view 가 TCAS 마름모로 표시
 
-라이다(YDLIDAR G2)가 차량 자외선차단 필름의 근적외선을 통과 못해서, 가시광선
-카메라 + 딥러닝 방식으로 교체했습니다.
+Lite-Mono 배율 보정:
+  Lite-Mono 는 단안 자기지도 학습이라 절대 스케일이 없다. 박스 아랫변과 카메라 높이로
+  구한 기하학 거리(services/ground_geometry.py)가 계산되는 박스들에서
+  배율 = 기하학거리 / Lite-Mono값 의 중앙값을 구해 EMA 로 갱신한다.
+  - 배율이 아직 없으면 기하학 거리가 있는 물체만 그 값으로 표시
+  - 장착 후 배율이 안정되면 그 값을 config.LITE_MONO_FIXED_SCALE 에 고정해도 됨
+    (TIMING 로그에 현재 배율이 같이 출력됨)
 
-실기(라즈베리파이4)에서 탐지+깊이 두 모델의 NCNN 변환/추론이 정상 동작하고
-PyTorch 직접 로드 대비 체감 속도가 개선됨을 확인했습니다.
-
-참고:
-- 최초 실행 시 각 모델마다 "PyTorch 로드 -> NCNN으로 export -> 다시 로드"
-  과정을 한 번 거치므로 첫 실행이 평소보다 오래 걸립니다. 이후 실행부터는
-  이미 변환된 <모델명>_ncnn_model 폴더를 바로 불러오므로 빠릅니다.
+NCNN: 탐지 모델(.pt)은 최초 실행 시 <이름>_ncnn_model 로 변환 후 재사용.
+라이다(YDLIDAR G2)는 차량 자외선차단 필름을 통과하지 못해 카메라 방식으로 교체함.
 """
 
 import os
+import time
 
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 
 import config
+from services.ground_geometry import focal_px_from_hfov, geometric_distance_m
 from services.sony_qx10_capture import SonyQX10Capture
 
 try:
@@ -65,8 +58,13 @@ class CameraDepthReaderThread(QThread):
         super().__init__(parent)
         self._running = False
         self._detect_model = None
-        self._depth_model = None
-        self._depth_attr_warned = False
+        self._lite = None
+
+        self._lite_scale = getattr(config, "LITE_MONO_FIXED_SCALE", None)
+        self._scale_fixed = self._lite_scale is not None
+
+        self._timing = {"det": 0.0, "depth": 0.0, "frames": 0}
+        self._last_timing_log = time.monotonic()
 
     def run(self):
         self._running = True
@@ -86,7 +84,7 @@ class CameraDepthReaderThread(QThread):
                 self.msleep(int(config.CAMERA_RECONNECT_INTERVAL_SEC * 1000))
 
     # ---------------------------------------------------------------
-    # NCNN 변환/로딩 (V1과 다른 부분은 여기뿐)
+    # 모델 로딩
     # ---------------------------------------------------------------
     def _ncnn_model_dir(self, pt_path: str) -> str:
         """Ultralytics의 export(format="ncnn") 명명 규칙: <이름>_ncnn_model 폴더."""
@@ -106,25 +104,40 @@ class CameraDepthReaderThread(QThread):
         self.connection_error.emit(f"NCNN 변환본이 없어 새로 변환합니다: {pt_path} -> {ncnn_dir}")
         pt_model = YOLO(pt_path)
         exported_path = pt_model.export(format="ncnn")
-        # export()가 반환하는 경로가 폴더 자체이거나 그 안의 파일일 수 있어
-        # 방어적으로 실제 폴더 경로를 다시 계산해서 사용
         load_path = exported_path if os.path.isdir(exported_path) else ncnn_dir
         self.connection_error.emit(f"NCNN 변환 완료, 로드 중: {load_path}")
         return YOLO(load_path)
+
+    def _load_lite_mono(self):
+        from services.litemono_depth import LiteMonoDepth
+
+        lite = LiteMonoDepth(
+            repo_dir=config.LITE_MONO_REPO_DIR,
+            weights_dir=config.LITE_MONO_WEIGHTS_DIR,
+            model_name=config.LITE_MONO_MODEL_NAME,
+            runtime=config.LITE_MONO_RUNTIME,
+            onnx_path=config.LITE_MONO_ONNX_PATH,
+            num_threads=config.LITE_MONO_NUM_THREADS,
+            horizon_in_band=config.LITE_MONO_HORIZON_IN_BAND,
+            crop=config.LITE_MONO_CROP,
+        )
+        for msg in lite.log:
+            self.connection_error.emit(msg)
+        return lite
 
     def _load_models(self) -> bool:
         try:
             if self._detect_model is None:
                 self._detect_model = self._load_or_export_ncnn(config.CAMERA_DETECT_MODEL_PATH)
-            if self._depth_model is None:
-                self._depth_model = self._load_or_export_ncnn(config.CAMERA_DEPTH_MODEL_PATH)
+            if self._lite is None:
+                self._lite = self._load_lite_mono()
             return True
         except Exception as exc:
             self.connection_error.emit(f"모델 로드/변환 실패: {type(exc).__name__}: {exc}")
             return False
 
     # ---------------------------------------------------------------
-    # 아래는 원본(camera_depth_reader.py)과 동일한 처리 로직
+    # 카메라 연결 / 루프
     # ---------------------------------------------------------------
     def _open_camera(self):
         """config.CAMERA_SOURCE에 따라 일반 USB 웹캠 또는 소니 QX10
@@ -147,8 +160,7 @@ class CameraDepthReaderThread(QThread):
         cap = self._open_camera()
         if cap is None or not cap.isOpened():
             # SonyQX10Capture는 어느 단계에서 실패했는지 알려줌(discovery=
-            # 와이파이 문제, api/stream=카메라 자체 문제). USB 웹캠 등
-            # last_failure_stage가 없는 경우는 그냥 "카메라 연결 안됨"으로 취급.
+            # 와이파이 문제, api/stream=카메라 자체 문제).
             failure_stage = getattr(cap, "last_failure_stage", None)
             if failure_stage == "discovery":
                 self.status_updated.emit("disconnected")
@@ -158,7 +170,7 @@ class CameraDepthReaderThread(QThread):
             return
 
         self.status_updated.emit("connected")
-        self.connection_error.emit("카메라 연결 및 추론 시작됨 (NCNN)")
+        self.connection_error.emit(f"카메라 연결 및 추론 시작됨 (depth=Lite-Mono)")
 
         try:
             while self._running:
@@ -170,6 +182,7 @@ class CameraDepthReaderThread(QThread):
 
                 objects = self._process_frame(frame)
                 self.scan_updated.emit(objects)
+                self._maybe_log_timing()
 
                 self.msleep(int(config.CAMERA_DEPTH_UPDATE_INTERVAL_SEC * 1000))
         except Exception as exc:
@@ -178,31 +191,65 @@ class CameraDepthReaderThread(QThread):
         finally:
             cap.release()
 
+    # ---------------------------------------------------------------
+    # 프레임 처리
+    # ---------------------------------------------------------------
     def _process_frame(self, frame: np.ndarray) -> list:
         height, width = frame.shape[:2]
 
+        t0 = time.perf_counter()
         detections = self._run_detection(frame)
+        t1 = time.perf_counter()
+        self._timing["det"] += t1 - t0
+        self._timing["frames"] += 1
         if not detections:
             return []
 
-        depth_map = self._run_depth(frame)
-        if depth_map is None:
-            return []
+        distances = self._litemono_distances(frame, detections)
+        self._timing["depth"] += time.perf_counter() - t1
 
         results = []
-        for x1, y1, x2, y2, _label in detections:
-            distance_m = self._box_distance(depth_map, x1, y1, x2, y2)
+        for (x1, y1, x2, y2, _label), distance_m in zip(detections, distances):
             if distance_m is None:
                 continue
-
             center_x = (x1 + x2) / 2
             fraction = center_x / max(1, width - 1)   # 0.0(왼쪽 끝) ~ 1.0(오른쪽 끝)
             angle_deg = (fraction - 0.5) * config.CAMERA_HORIZONTAL_FOV_DEG
             angle_deg += config.CAMERA_ANGLE_OFFSET_DEG
-
             results.append((angle_deg, distance_m))
-
         return results
+
+    def _litemono_distances(self, frame: np.ndarray, detections: list) -> list:
+        """Lite-Mono 상대 깊이 + 기하학 배율 보정으로 박스별 거리(m) 목록."""
+        h, w = frame.shape[:2]
+        horizon_row = config.CAMERA_HORIZON_ROW_FRAC * h
+        rel_map = self._lite.predict(frame, horizon_row)
+
+        f_px = focal_px_from_hfov(w, config.CAMERA_HORIZONTAL_FOV_DEG)
+        margin = config.CAMERA_BOTTOM_TRUNCATE_MARGIN_PX
+        rel_list, geo_list, ratios = [], [], []
+        for x1, y1, x2, y2, _ in detections:
+            rel = self._box_distance(rel_map, x1, y1, x2, y2)
+            geo = None
+            if y2 < h - 1 - margin:
+                geo = geometric_distance_m(y2, h, f_px, config.CAMERA_HEIGHT_M, horizon_row)
+            if rel is not None and geo is not None:
+                ratios.append(geo / rel)
+            rel_list.append(rel)
+            geo_list.append(geo)
+
+        if ratios and not self._scale_fixed:
+            r = float(np.median(ratios))
+            a = config.LITE_MONO_SCALE_EMA_ALPHA
+            self._lite_scale = r if self._lite_scale is None else (1 - a) * self._lite_scale + a * r
+
+        out = []
+        for rel, geo in zip(rel_list, geo_list):
+            if rel is not None and self._lite_scale is not None:
+                out.append(rel * self._lite_scale)
+            else:
+                out.append(geo)   # 배율 없거나 박스가 crop 띠 밖이면 기하학 거리로 대체
+        return out
 
     def _run_detection(self, frame: np.ndarray) -> list:
         """탐지 모델로 관심 클래스(차량/사람)의 바운딩박스 목록을 반환.
@@ -220,31 +267,9 @@ class CameraDepthReaderThread(QThread):
             boxes.append((x1, y1, x2, y2, label))
         return boxes
 
-    def _run_depth(self, frame: np.ndarray):
-        """깊이 모델로 픽셀별 깊이맵(미터)을 반환. 실패하면 None.
-
-        ultralytics의 Results.depth는 DepthMap 객체(BaseTensor 상속)이고,
-        실제 torch.Tensor/np.ndarray는 그 .data 속성에 들어있음."""
-        result = self._depth_model.predict(frame, verbose=False)[0]
-
-        depth = getattr(result, "depth", None)
-        if depth is None:
-            if not self._depth_attr_warned:
-                self._depth_attr_warned = True
-                attrs = [a for a in dir(result) if not a.startswith("_")]
-                self.connection_error.emit(
-                    f"result.depth가 없습니다 (NCNN 백엔드에서 다르게 나올 수 있음). "
-                    f"result 속성들: {attrs}")
-            return None
-
-        data = getattr(depth, "data", depth)  # DepthMap.data가 실제 텐서
-        arr = data.cpu().numpy() if hasattr(data, "cpu") else np.asarray(data)
-        if arr.ndim == 3:
-            arr = arr[0]
-        return arr
-
     @staticmethod
     def _box_distance(depth_map: np.ndarray, x1: int, y1: int, x2: int, y2: int):
+        """박스 영역 깊이 중앙값. NaN(crop 띠 밖)과 0 이하는 제외."""
         h, w = depth_map.shape[:2]
         x1, x2 = max(0, x1), min(w, x2)
         y1, y2 = max(0, y1), min(h, y2)
@@ -252,10 +277,25 @@ class CameraDepthReaderThread(QThread):
             return None
 
         region = depth_map[y1:y2, x1:x2]
-        valid = region[region > 0]
+        valid = region[np.isfinite(region) & (region > 0)]
         if valid.size == 0:
             return None
         return float(np.median(valid))
+
+    def _maybe_log_timing(self):
+        interval = getattr(config, "CAMERA_TIMING_LOG_INTERVAL_SEC", 0)
+        now = time.monotonic()
+        if not interval or now - self._last_timing_log < interval:
+            return
+        n = max(1, self._timing["frames"])
+        msg = (f"[TIMING] det {self._timing['det'] / n * 1000:.0f}ms, "
+               f"depth {self._timing['depth'] / n * 1000:.0f}ms/frame "
+               f"({self._timing['frames']} frames)")
+        scale = f"{self._lite_scale:.3f}" if self._lite_scale is not None else "미정"
+        msg += f", lite scale={scale}{' (고정)' if self._scale_fixed else ''}"
+        self.connection_error.emit(msg)
+        self._timing = {"det": 0.0, "depth": 0.0, "frames": 0}
+        self._last_timing_log = now
 
     def stop(self):
         self._running = False

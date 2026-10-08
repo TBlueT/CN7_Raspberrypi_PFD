@@ -4,7 +4,7 @@ NDView (MVVM의 View)
 이전 NDWidget과 렌더링 로직은 동일하지만, 상태를 직접 들고 있지 않고
 viewmodels.nd_viewmodel.NDViewModel만 읽어서 그립니다.
 
-라이다가 차량 자외선차단 필름을 통과 못해 카메라+YOLO26-Depth로 교체.
+라이다가 차량 자외선차단 필름을 통과 못해 카메라(yolo26n 탐지 + Lite-Mono 깊이)로 교체.
 점 구름 대신 실제 B737 TCAS(공중충돌방지) 화면처럼 물체 하나당 마름모
 하나 + 거리 숫자로 표시합니다. 카메라 시야각(config.CAMERA_HORIZONTAL_FOV_DEG)
 이 라이다 때(180도)보다 훨씬 좁아서, 그 범위 밖은 점선으로 "커버리지 경계"를

@@ -46,8 +46,10 @@ services/     하드웨어에서 원시 데이터를 읽는 스레드 (Model 공
                           직접 추정 (원심력/가감속 영향을 자연스럽게 완화)
   can_reader.py           인포카 BLE로 차량 CAN 데이터 조회 (속도는 PID 010D;
                           SCC/LFA/HDA는 이 어댑터 한계로 현재 불가, 아래 참고)
-  camera_depth_reader.py  카메라 프레임 → YOLO26-Depth로 깊이맵 → 물체 단위
-                          (각도,거리) 클러스터링 → 발행
+  camera_depth_reader.py  카메라 프레임 → yolo26n 탐지 + Lite-Mono-tiny 깊이 추정
+                          → 물체별 (각도,거리) 발행
+  litemono_depth.py       Lite-Mono-tiny 상대 깊이 추론 (torch / onnxruntime)
+  ground_geometry.py      박스 아랫변+카메라 높이로 지면 거리 계산 (배율 보정 기준)
   sony_qx10_capture.py    소니 QX10 Wi-Fi 라이브뷰를 cv2.VideoCapture와 같은
                           인터페이스로 감싼 캡처 클래스 (SSDP 탐색 포함)
 
@@ -89,14 +91,33 @@ EBIMU가 자체 계산해서 주는 Roll/Pitch를 그대로 쓰지 않고, `serv
 사후보정 등 더 단순한 방식들을 먼저 시도했으나 Mahony로 대체됨 — 원심가속도
 72m/s² 시뮬레이션에서 사후보정 방식은 82도까지 새는 반면 Mahony는 6도만 샘)
 
-## 전방 감지 (카메라 + YOLO26-Depth)
+## 전방 감지 (카메라 + 탐지 + 깊이 추정)
 
-1. 카메라 프레임에서 관심영역(ROI, 하늘/보닛 제외)만 추출
-2. YOLO26-Depth로 픽셀별 미터 단위 깊이맵 획득
-3. 각 세로 열의 최소 깊이 = 그 방향 최근접 장애물 거리
-4. 인접 열을 깊이 유사도로 클러스터링 → 노이즈성 좁은 클러스터 제거
-5. 클러스터 중심을 카메라 시야각 기준 각도로 변환 → (각도,거리) 발행
+1. yolo26n(NCNN)으로 차량/사람 바운딩박스 탐지
+2. Lite-Mono-tiny(2.2M, KITTI 주행영상 학습)로 상대 깊이맵 추정.
+   입력이 640:192 비율이라 지평선 주변 띠만 잘라서 넣음
+   (이전에 쓰던 yolo26n-depth는 라즈베리파이4에서 느려서 제거)
+3. 박스 영역 깊이 중앙값 = 물체 거리
+4. (litemono) 상대 깊이 → 미터 배율은 **기하학 거리**로 자동 보정:
+   박스 아랫변 y좌표 + 카메라 높이로 지면 거리를 구하고
+   `배율 = 기하학거리 / Lite-Mono값` 의 중앙값을 EMA로 갱신.
+   배율이 안정되면 `LITE_MONO_FIXED_SCALE`에 고정 가능 (로그 `[TIMING] ... lite scale=`)
+5. 박스 중심을 카메라 시야각 기준 각도로 변환 → (각도,거리) 발행
 6. ND 화면에 물체 하나당 마름모 마커 + 거리 라벨로 표시 (B737 TCAS 스타일)
+
+### Lite-Mono 준비 (프로젝트 폴더 안에)
+
+```bash
+cd ~/cn7
+git clone https://github.com/noahzn/Lite-Mono.git
+# README 표의 lite-mono-tiny (640x192) 가중치를 받아 압축 해제
+#   → ~/cn7/lite-mono-tiny_640x192/encoder.pth, depth.pth
+pip install timm --break-system-packages
+```
+
+- `LITE_MONO_RUNTIME="onnx"` 로 바꾸면 onnxruntime 사용 (`pip install onnxruntime`).
+  `.onnx`가 없으면 최초 1회 자동 변환. 데스크탑에서 변환한 `.onnx`만 복사해도 동작
+- 라즈베리파이에서 torch/onnx 둘 다 돌려보고 `[TIMING]` 로그의 depth ms가 작은 쪽 선택
 
 ## 설치
 
@@ -116,7 +137,9 @@ pip install pyserial bleak cantools opencv-python ultralytics numpy --break-syst
 - `OBD_DBC_PATH` — 기본값은 같은 폴더의 `hyundai_can_clean.dbc` 자동 참조
 - `CAMERA_SOURCE` — `"sony_qx10"` 또는 `"usb"`
 - `SONY_QX10_FIXED_ENDPOINT_URL` — SSDP 자동탐색 실패 시 카메라 IP 직접 지정
-- `CAMERA_DEPTH_MODEL_PATH`, `CAMERA_HORIZONTAL_FOV_DEG`, `CAMERA_ROI_TOP/BOTTOM_FRAC`
+- `CAMERA_HEIGHT_M`, `CAMERA_HORIZON_ROW_FRAC`, `CAMERA_HORIZONTAL_FOV_DEG` — 장착 후
+  실측값으로 입력 (Lite-Mono 배율 보정 정확도에 직결)
+- `LITE_MONO_REPO_DIR`, `LITE_MONO_WEIGHTS_DIR`, `LITE_MONO_RUNTIME`
 
 ## 실행
 
@@ -138,8 +161,8 @@ python3 main.py
   표준 PID 요청-응답 범위를 벗어나는 제조사 고유 데이터는 현재 못 받아옴.
   대안으로 UDS Mode 22(진단 세션) 방식이나 별도 CAN 트랜시버(MCP2515 등) 하드웨어
   검토 중
-- **YOLO26-Depth 결과 파싱**: `ultralytics` 버전에 따라 깊이맵 속성명이 다를 수
-  있어 `camera_depth_reader.py`의 `_run_inference()` 조정이 필요할 수 있음
+- **Lite-Mono 거리 정확도**: 평지 가정 기하학 배율에 의존 — 오르막/내리막, 카메라
+  높이·지평선 설정 오차가 그대로 거리 오차가 됨. 라즈베리파이4 추론 속도 실측 필요
 - **소니 QX10 연동**: SSDP 자동탐색/`startLiveview` 응답 구조는 실기 미검증 —
   안 되면 `SONY_QX10_FIXED_ENDPOINT_URL` 직접 지정하거나 응답 구조 확인 필요
 - **IMU 내장 안정화 기능 확인**(`<savc1>` 등)은 정확한 명령어 미검증 상태
