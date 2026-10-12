@@ -33,7 +33,7 @@ SPEED_TICK_STEP = 10           # 눈금 간격 (km/h)
 SPEED_LABEL_STEP = 20          # 숫자 간격 (km/h)
 SPEED_TREND_SEC = 3.0          # 트렌드 화살표 = 이 시간 뒤 예상 속도 (실기 10초, 차는 가속이 빨라 3초)
 SPEED_ACCEL_SMOOTHING_SEC = 0.5   # 가속도 계산 평활 시간
-SPEED_BARBER_POLE_KPH = 110    # 이 속도 이상 빨강/검정 줄무늬 (None 이면 표시 안 함)
+SPEED_BARBER_POLE_KPH = 130    # 이 속도 이상 빨강/검정 줄무늬 (None 이면 표시 안 함)
 ALT_TICK_STEP = 100
 ALT_LABEL_STEP = 200
 COLOR_TAPE_BG = "#4d5257"      # 테이프 회색 배경
