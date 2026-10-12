@@ -417,8 +417,10 @@ class PFDView(QWidget):
             painter.drawText(upper_rect, align_r, upper(base))
         painter.restore()
 
+        # 드럼 숫자는 고도 박스 드럼과 같은 크기/간격 (12pt, 17px)
         drum = QRectF(dl + 1, mid - 20, br - dl - 2, 40)
-        sp = 26
+        sp = 17
+        painter.setFont(self._font_readout_small)
         painter.save()
         painter.setClipRect(drum)
         for k in (-2, -1, 0, 1, 2):
@@ -426,7 +428,7 @@ class PFDView(QWidget):
             if n < 0:
                 continue
             cy = mid - (k - frac) * sp
-            painter.drawText(QRectF(dl, cy - 12, br - dl, 24), Qt.AlignmentFlag.AlignCenter, str(n % 10))
+            painter.drawText(QRectF(dl, cy - 10, br - dl, 20), Qt.AlignmentFlag.AlignCenter, str(n % 10))
         painter.restore()
 
     def _draw_altitude_tape(self, painter: QPainter):
