@@ -12,6 +12,7 @@ viewmodels.nd_viewmodel.NDViewModel만 읽어서 그립니다.
 """
 
 import math
+import time
 
 from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPolygonF, QFont, QPainterPath, QPixmap
@@ -36,6 +37,7 @@ class NDView(QWidget):
         self._font_small = QFont("sans-serif", 8)
         self._font_value = QFont("sans-serif", 12, QFont.Weight.Medium)
         self._font_flag = QFont("sans-serif", 18, QFont.Weight.Bold)
+        self._font_status = QFont("sans-serif", 8, QFont.Weight.Bold)
 
         # 절대 안 바뀌는 배경(반원, 거리 링, 라벨, 시야각 점선, 헤딩박스
         # 테두리+고정 라벨)은 한 번만 그려서 캐싱해두고, 매 프레임은 이걸
@@ -49,7 +51,10 @@ class NDView(QWidget):
         painter.drawPixmap(0, 0, self._background_pixmap)
 
         self._draw_heading_value(painter)
-        if self.vm.connection_status == "connected":
+        if self.vm.model_state != "ready":
+            # 추론 모델 다운로드/변환/로드 중이거나 실패 - 카메라 상태보다 우선 표시
+            self._draw_model_status(painter)
+        elif self.vm.connection_status == "connected":
             self._draw_objects(painter)
             self._draw_top_label(painter)
         else:
@@ -71,6 +76,42 @@ class NDView(QWidget):
         painter.setPen(QPen(QColor(config.COLOR_WARN_TEXT)))
         painter.drawText(QRectF(cx - 150, center_y - 20, 300, 40),
                           Qt.AlignmentFlag.AlignCenter, text)
+
+    def _draw_model_status(self, painter: QPainter):
+        """B737 ND 스타일: 가운데에 상자 없이 상태 문구, 왼쪽 아래(레이더 모드
+        표시 자리)에 모델별 진행 단계를 작은 글씨로. 진행 중 단계엔 경과 시간."""
+        failed = self.vm.model_state == "failed"
+        color = QColor(config.COLOR_WARN_TEXT if failed else config.COLOR_ND_INFO)
+
+        cx, cy = config.ND_CENTER
+        r = config.ND_RADIUS
+        center_y = cy - r * 0.55
+        painter.setFont(self._font_flag)
+        painter.setPen(QPen(color))
+        painter.drawText(QRectF(cx - 150, center_y - 20, 300, 40),
+                          Qt.AlignmentFlag.AlignCenter,
+                          "모델 실패" if failed else "모델 준비 중")
+
+        elapsed = time.monotonic() - self.vm.model_status_time
+        lines = self.vm.model_lines
+        painter.setFont(self._font_status)
+        painter.setPen(QPen(color))
+        line_h = 16
+        top = config.PANEL_HEIGHT - 12 - line_h * len(lines)
+        for i, line in enumerate(lines):
+            text = line.get("text", "")
+            timer = line.get("timer")
+            if timer == "up":
+                text += f"  {self._mmss(elapsed)}"
+            elif timer == "down":
+                text += f"  {self._mmss(max(0.0, line.get('seconds', 0.0) - elapsed))}"
+            painter.drawText(QRectF(8, top + i * line_h, config.PANEL_WIDTH - 16, line_h),
+                              Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+
+    @staticmethod
+    def _mmss(seconds: float) -> str:
+        s = int(seconds)
+        return f"{s // 60:02d}:{s % 60:02d}"
 
     def _draw_top_label(self, painter: QPainter):
         count = len(self.vm.scan.points)

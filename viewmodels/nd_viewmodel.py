@@ -8,6 +8,8 @@ Model을 갱신합니다.
 View가 FRAME_RATE_HZ 주기 타이머로 스스로 최신 상태를 읽어가서 그립니다.
 """
 
+import time
+
 from PyQt6.QtCore import QObject
 
 from models.scan_model import ScanModel
@@ -21,6 +23,11 @@ class NDViewModel(QObject):
         # "disconnected" / "camera_error" / "connected" - 초기값은 아직
         # 한 번도 연결 시도 결과를 못 받은 상태이므로 "disconnected"로 시작
         self.connection_status = "disconnected"
+        # 추론 모델 준비 상태: "loading" / "ready" / "failed"
+        # 시작하자마자 모델 로딩부터 하므로 "loading"으로 시작
+        self.model_state = "loading"
+        self.model_lines = []          # [{"text", "timer", "seconds"}, ...]
+        self.model_status_time = time.monotonic()   # 마지막 상태 수신 시각 (경과/카운트다운 기준)
 
     # ---- services.imu_reader.ImuReaderThread.attitude_updated 에 연결 (yaw만 사용) ----
     def on_heading_updated(self, yaw_deg: float):
@@ -35,3 +42,9 @@ class NDViewModel(QObject):
     # ---- services.camera_depth_reader.CameraDepthReaderThread.status_updated 에 연결 ----
     def on_status_updated(self, status: str):
         self.connection_status = status
+
+    # ---- services.camera_depth_reader.CameraDepthReaderThread.model_status_updated 에 연결 ----
+    def on_model_status_updated(self, state: str, lines: list):
+        self.model_state = state
+        self.model_lines = lines
+        self.model_status_time = time.monotonic()

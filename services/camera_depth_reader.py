@@ -53,6 +53,12 @@ class CameraDepthReaderThread(QThread):
     # "connected"(정상 - 물체가 0개 감지돼도 이 상태임)
     status_updated = pyqtSignal(str)
     connection_error = pyqtSignal(str)
+    # 모델 준비 상태 (ND 화면 표시용)
+    #   state: "loading" / "ready" / "failed"
+    #   lines: [{"text": str, "timer": None|"up"|"down", "seconds": float}, ...]
+    #          timer="up"   -> 표시 시점부터 경과 시간 표시 (진행 중인 단계)
+    #          timer="down" -> seconds 부터 카운트다운 (재시도 대기)
+    model_status_updated = pyqtSignal(str, list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -66,15 +72,23 @@ class CameraDepthReaderThread(QThread):
         self._timing = {"det": 0.0, "depth": 0.0, "frames": 0}
         self._last_timing_log = time.monotonic()
 
+        # 모델 준비 상태 표시용 (ND 왼쪽 아래 상태 줄)
+        self._det_name = os.path.splitext(
+            os.path.basename(config.CAMERA_DETECT_MODEL_PATH))[0].upper()
+        self._model_lines = {"DET": "", "DEPTH": ""}
+        self._model_active = None   # 지금 진행 중인 줄 ("DET"/"DEPTH")
+
     def run(self):
         self._running = True
 
         if cv2 is None:
             self.status_updated.emit("camera_error")
+            self.model_status_updated.emit("failed", [{"text": "opencv-python 미설치", "timer": None}])
             self.connection_error.emit("opencv-python이 설치되어 있지 않습니다.")
             return
         if YOLO is None:
             self.status_updated.emit("camera_error")
+            self.model_status_updated.emit("failed", [{"text": "ultralytics 미설치", "timer": None}])
             self.connection_error.emit("ultralytics가 설치되어 있지 않습니다.")
             return
 
@@ -82,6 +96,27 @@ class CameraDepthReaderThread(QThread):
             self._connect_and_run()
             if self._running:
                 self.msleep(int(config.CAMERA_RECONNECT_INTERVAL_SEC * 1000))
+
+    # ---------------------------------------------------------------
+    # 모델 준비 상태 발행
+    # ---------------------------------------------------------------
+    def _set_model_stage(self, key: str, text: str):
+        """key("DET"/"DEPTH") 줄을 text 단계로 바꾸고 진행 중 상태를 발행."""
+        self._model_lines[key] = text
+        self._model_active = key
+        self._emit_model_status("loading")
+
+    def _emit_model_status(self, state: str, retry_sec: float = None):
+        lines = []
+        for key in ("DET", "DEPTH"):
+            text = self._model_lines[key]
+            if not text:
+                continue
+            active = state == "loading" and key == self._model_active
+            lines.append({"text": f"{key}  {text}", "timer": "up" if active else None})
+        if retry_sec is not None:
+            lines.append({"text": "재시도", "timer": "down", "seconds": retry_sec})
+        self.model_status_updated.emit(state, lines)
 
     # ---------------------------------------------------------------
     # 모델 로딩
@@ -96,20 +131,34 @@ class CameraDepthReaderThread(QThread):
         """이미 변환된 NCNN 모델 폴더가 있으면 바로 로드, 없으면 .pt를 먼저
         로드해서 export(format="ncnn")로 변환한 뒤 그 결과를 로드한다."""
         ncnn_dir = self._ncnn_model_dir(pt_path)
+        name = self._det_name
 
         if os.path.isdir(ncnn_dir):
+            self._set_model_stage("DET", f"{name}  로드")
             self.connection_error.emit(f"NCNN 모델 로드 중(기존 변환본 사용): {ncnn_dir}")
             return YOLO(ncnn_dir)
 
         self.connection_error.emit(f"NCNN 변환본이 없어 새로 변환합니다: {pt_path} -> {ncnn_dir}")
+        if not os.path.isfile(pt_path):
+            # 공식 모델명이면 ultralytics 가 YOLO() 생성 시 자동 다운로드
+            self._set_model_stage("DET", f"{name}  다운로드")
         pt_model = YOLO(pt_path)
+        self._set_model_stage("DET", f"{name}  NCNN 변환")
         exported_path = pt_model.export(format="ncnn")
         load_path = exported_path if os.path.isdir(exported_path) else ncnn_dir
+        self._set_model_stage("DET", f"{name}  로드")
         self.connection_error.emit(f"NCNN 변환 완료, 로드 중: {load_path}")
         return YOLO(load_path)
 
     def _load_lite_mono(self):
         from services.litemono_depth import LiteMonoDepth
+
+        onnx_path = config.LITE_MONO_ONNX_PATH or os.path.join(
+            config.LITE_MONO_WEIGHTS_DIR, f"{config.LITE_MONO_MODEL_NAME}.onnx")
+        if config.LITE_MONO_RUNTIME == "onnx" and not os.path.isfile(onnx_path):
+            self._set_model_stage("DEPTH", "LITE-MONO  ONNX 변환")
+        else:
+            self._set_model_stage("DEPTH", "LITE-MONO  로드")
 
         lite = LiteMonoDepth(
             repo_dir=config.LITE_MONO_REPO_DIR,
@@ -126,13 +175,22 @@ class CameraDepthReaderThread(QThread):
         return lite
 
     def _load_models(self) -> bool:
+        if self._detect_model is not None and self._lite is not None:
+            return True   # 재연결 시에는 이미 로드된 모델 재사용
         try:
             if self._detect_model is None:
                 self._detect_model = self._load_or_export_ncnn(config.CAMERA_DETECT_MODEL_PATH)
+                self._model_lines["DET"] = f"{self._det_name}  READY"
             if self._lite is None:
                 self._lite = self._load_lite_mono()
+                self._model_lines["DEPTH"] = "LITE-MONO  READY"
+            self._emit_model_status("ready")
             return True
         except Exception as exc:
+            key = self._model_active
+            if key and self._model_lines[key]:
+                self._model_lines[key] += " 실패"
+            self._emit_model_status("failed", retry_sec=config.CAMERA_RECONNECT_INTERVAL_SEC)
             self.connection_error.emit(f"모델 로드/변환 실패: {type(exc).__name__}: {exc}")
             return False
 

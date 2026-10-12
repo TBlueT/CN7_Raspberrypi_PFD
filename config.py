@@ -176,6 +176,7 @@ COLOR_CURRENT_VALUE_BG = "#00c8c8"   # 사이언
 COLOR_MODE_TEXT = "#2fd646"          # 초록 (활성 상태)
 COLOR_MODE_TEXT_OFF = "#555555"      # 회색 (비활성 상태)
 COLOR_WARN_TEXT = "#f0997b"
+COLOR_ND_INFO = "#00c8c8"           # ND 진행 상태 문구 (모델 준비 중)
 COLOR_HEADING_BG = "#333333"         # 헤딩 아크 배경 (시인성 확보용 회색)
 COLOR_TREND = "#f0a020"              # 속도 트렌드 화살표
 COLOR_ND_BG = "#0a0a0a"
