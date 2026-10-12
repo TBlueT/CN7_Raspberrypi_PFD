@@ -50,6 +50,14 @@ class PFDView(QWidget):
         self._font_value = QFont("sans-serif", 15, QFont.Weight.Medium)
         self._font_flag_big = QFont("sans-serif", 18, QFont.Weight.Bold)
         self._font_flag = QFont("sans-serif", 14, QFont.Weight.Bold)
+        self._font_tape = QFont("sans-serif", 11, QFont.Weight.Bold)
+        self._font_tape_unit = QFont("sans-serif", 9, QFont.Weight.Bold)
+        self._font_readout = QFont("sans-serif", 16, QFont.Weight.Bold)
+        self._font_readout_small = QFont("sans-serif", 12, QFont.Weight.Bold)
+        self._font_selected = QFont("sans-serif", 14, QFont.Weight.Bold)
+        self._font_compass = QFont("sans-serif", 11, QFont.Weight.Bold)
+        self._font_compass_big = QFont("sans-serif", 13, QFont.Weight.Bold)
+        self._font_readout_heading = QFont("sans-serif", 15, QFont.Weight.Bold)
 
     # ---------------------------------------------------------------
     def paintEvent(self, event):
@@ -97,25 +105,12 @@ class PFDView(QWidget):
         draw_fail_flag(painter, rect.center(), "SPD", self._font_flag)
 
     def _draw_heading_fail(self, painter: QPainter):
-        """헤딩 데이터 없음: 아크 배경/테두리만 남기고 눈금/숫자 대신 HDG."""
+        """헤딩 데이터 없음: 나침반 원판만 남기고 눈금/숫자 대신 HDG."""
+        self._draw_compass_disk(painter)
         cx, cy = config.HEADING_ARC_CENTER
         r = config.HEADING_ARC_RADIUS
-        r_bg = r + 12
-        bg_rect = QRectF(cx - r_bg, cy - r_bg, r_bg * 2, r_bg * 2)
-        bg_path = QPainterPath()
-        bg_path.moveTo(cx + r_bg, cy)
-        bg_path.arcTo(bg_rect, 0, 180)
-        bg_path.closeSubpath()
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor(config.COLOR_HEADING_BG)))
-        painter.drawPath(bg_path)
-        painter.setPen(QPen(QColor(config.COLOR_TAPE_BORDER), 1.5))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawArc(QRectF(cx - r, cy - r, r * 2, r * 2), 0, 180 * 16)
-
         # 평소 헤딩 숫자 박스 자리에 표시
-        pointer_top_y = cy - r - 10
-        draw_fail_flag(painter, QPointF(cx, pointer_top_y - 10), "HDG", self._font_flag)
+        draw_fail_flag(painter, QPointF(cx, cy - r - 14), "HDG", self._font_flag)
 
     # ---------------------------------------------------------------
     def _draw_fma_bar(self, painter: QPainter):
@@ -268,166 +263,286 @@ class PFDView(QWidget):
         painter.drawPolygon(pointer)
         painter.restore()
 
-    def _draw_vertical_tape(self, painter: QPainter, rect_tuple, value: float,
-                             pixels_per_unit: float, tick_step: int,
-                             ticks_on_right: bool, value_format="{:.0f}",
-                             slide_value_box: bool = False):
+    # ---------------------------------------------------------------
+    # 속도 / 고도 테이프 (B737 NG 스타일)
+    #   회색 테이프, 높은 값이 위. 현재값 박스는 검정 바탕 + 흰 테두리 +
+    #   ADI 쪽 포인터, 끝자리는 드럼처럼 세로로 굴러감(테이프와 같은 방향).
+    # ---------------------------------------------------------------
+    @staticmethod
+    def _tape_layout(rect_tuple):
+        """테이프 전체 영역 -> (위 띠, 본체, 아래 띠)."""
         x, y, w, h = rect_tuple
-        rect = QRectF(x, y, w, h)
-        painter.setPen(QPen(QColor(config.COLOR_TAPE_BORDER), 2))
-        painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
-        painter.drawRect(rect)
+        top_h = config.TAPE_TOP_STRIP_PX
+        bot_h = config.TAPE_BOTTOM_STRIP_PX
+        top = QRectF(x, y, w, top_h - 2)
+        body = QRectF(x, y + top_h, w, h - top_h - bot_h)
+        bottom = QRectF(x, y + h - bot_h + 2, w, bot_h - 2)
+        return top, body, bottom
 
-        mid_y = y + h / 2
-        painter.setFont(self._font_small)
-
-        tick_pixel_step = tick_step * pixels_per_unit
-        base_value = round(value / tick_step) * tick_step
-        start_offset = (value - base_value) * pixels_per_unit
-
-        tick_x1 = x + w - 12
-        tick_x2 = x + w
-        text_x = x + 4
-        text_w = w - 18
-        align = Qt.AlignmentFlag.AlignRight
-        if ticks_on_right:
-            tick_x1 = x
-            tick_x2 = x + 12
-            text_x = x + 14
-            align = Qt.AlignmentFlag.AlignLeft
-
-        pen_tick = QPen(QColor(config.COLOR_TAPE_TICK), 1)
-        painter.setPen(pen_tick)
-        for i in range(-15, 16):
-            ty = mid_y + start_offset - i * tick_pixel_step
-            if y < ty < y + h:
-                painter.drawLine(QPointF(tick_x1, ty), QPointF(tick_x2, ty))
-                tick_value = base_value + i * tick_step
-                painter.setPen(QPen(QColor(config.COLOR_WHITE)))
-                painter.drawText(QRectF(text_x, ty - 8, text_w, 16),
-                                  align | Qt.AlignmentFlag.AlignVCenter,
-                                  value_format.format(tick_value))
-                painter.setPen(pen_tick)
-
-        box_h = 20
-        box_rect = QRectF(x + 4, mid_y - box_h / 2, w - 8, box_h)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor(config.COLOR_CURRENT_VALUE_BG)))
-        painter.drawRect(box_rect)
-
-        painter.setFont(self._font_value)
-        if slide_value_box:
-            self._draw_sliding_value(painter, box_rect, value, value_format)
-        else:
-            painter.setPen(QPen(QColor(config.COLOR_BLACK)))
-            painter.drawText(box_rect, Qt.AlignmentFlag.AlignCenter, value_format.format(value))
-
-    def _draw_sliding_value(self, painter: QPainter, box_rect: QRectF,
-                             value: float, value_format: str):
-        """오도미터처럼, 정수값이 바뀔 때 위로 슬라이드하며 전환되는 효과.
-        예: 72 -> 73으로 바뀔 때 72가 위로 빠지면서 73이 아래에서 올라옴."""
-        base = math.floor(value)
-        frac = value - base   # 0.0 ~ 1.0, 다음 정수로의 진행률
-        box_h = box_rect.height()
-
-        painter.save()
-        painter.setClipRect(box_rect)
-        painter.setPen(QPen(QColor(config.COLOR_BLACK)))
-
-        offset_base = -frac * box_h
-        offset_next = box_h - frac * box_h
-
-        current_rect = QRectF(box_rect.x(), box_rect.y() + offset_base,
-                               box_rect.width(), box_h)
-        next_rect = QRectF(box_rect.x(), box_rect.y() + offset_next,
-                            box_rect.width(), box_h)
-
-        painter.drawText(current_rect, Qt.AlignmentFlag.AlignCenter,
-                          value_format.format(base))
-        painter.drawText(next_rect, Qt.AlignmentFlag.AlignCenter,
-                          value_format.format(base + 1))
-
-        painter.restore()
+    def _draw_tape_scale(self, painter: QPainter, body: QRectF, value: float, ppu: float,
+                         tick_step: int, label_step: int, ticks_left: bool, min_value=None):
+        """눈금(tick_step 마다)과 숫자(label_step 마다). 눈금은 ADI 쪽 가장자리."""
+        mid = body.center().y()
+        half_range = body.height() / 2 / ppu
+        lo = int(math.floor((value - half_range) / tick_step) * tick_step)
+        hi = int(math.ceil((value + half_range) / tick_step) * tick_step)
+        tick_len = 9
+        painter.setFont(self._font_tape)
+        painter.setPen(QPen(QColor(config.COLOR_WHITE), 1.5))
+        for s in range(lo, hi + 1, tick_step):
+            if min_value is not None and s < min_value:
+                continue
+            ty = mid - (s - value) * ppu
+            if ticks_left:
+                x1, x2 = body.left(), body.left() + tick_len
+                text_rect = QRectF(x2 + 2, ty - 9, body.width() - tick_len - 4, 18)
+                align = Qt.AlignmentFlag.AlignLeft
+            else:
+                x1, x2 = body.right() - tick_len, body.right()
+                text_rect = QRectF(body.left() + 2, ty - 9, body.width() - tick_len - 4, 18)
+                align = Qt.AlignmentFlag.AlignRight
+            painter.drawLine(QPointF(x1, ty), QPointF(x2, ty))
+            if s % label_step == 0:
+                painter.drawText(text_rect, align | Qt.AlignmentFlag.AlignVCenter, str(s))
 
     def _draw_speed_tape(self, painter: QPainter):
         vehicle = self.vm.vehicle
-        self._draw_vertical_tape(
-            painter, config.SPEED_TAPE_RECT, vehicle.speed_kph,
-            config.SPEED_PIXELS_PER_UNIT, 5, ticks_on_right=False,
-            slide_value_box=True)
+        v = max(0.0, vehicle.speed_kph)
+        ppu = config.SPEED_PIXELS_PER_UNIT
+        top, body, bottom = self._tape_layout(config.SPEED_TAPE_RECT)
+        scc_set = (vehicle.scc_set_speed
+                   if vehicle.scc_active and vehicle.scc_set_speed > 0 else None)
 
-        trend = vehicle.speed_kph - vehicle.prev_speed_kph
-        if abs(trend) > 0.05:
-            x, y, w, h = config.SPEED_TAPE_RECT
-            mid_y = y + h / 2
-            tip_x = x + w - 2
-            length = max(6, min(40, abs(trend) * 20))
-            tip_y = mid_y - length if trend > 0 else mid_y + length
-            pen = QPen(QColor(config.COLOR_TREND), 2)
-            painter.setPen(pen)
-            painter.drawLine(QPointF(tip_x, mid_y), QPointF(tip_x, tip_y))
-            arrow_dir = -1 if trend > 0 else 1
-            painter.drawLine(QPointF(tip_x, tip_y), QPointF(tip_x - 4, tip_y - arrow_dir * 6))
+        painter.fillRect(body, QColor(config.COLOR_TAPE_BG))
+        painter.save()
+        painter.setClipRect(body)
+        self._draw_barber_pole(painter, body, v, ppu)
+        self._draw_tape_scale(painter, body, v, ppu, config.SPEED_TICK_STEP,
+                              config.SPEED_LABEL_STEP, ticks_left=False, min_value=0)
+        self._draw_speed_trend(painter, body, vehicle.speed_accel_kph_s, ppu)
+        painter.restore()
+
+        if scc_set is not None:
+            self._draw_speed_bug(painter, body, v, scc_set, ppu)
+        self._draw_speed_readout(painter, body, v)
+
+        # 위 띠: SCC 설정속도 (실기의 MCP 선택 속도 자리, 마젠타)
+        painter.fillRect(top, QColor(config.COLOR_BLACK))
+        if scc_set is not None:
+            painter.setFont(self._font_selected)
+            painter.setPen(QPen(QColor(config.COLOR_SELECTED)))
+            painter.drawText(top, Qt.AlignmentFlag.AlignCenter, f"{int(round(scc_set))}")
+        # 아래 띠: 단위 (실기의 마하수 자리)
+        painter.setFont(self._font_tape_unit)
+        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
+        painter.drawText(bottom, Qt.AlignmentFlag.AlignCenter, "KM/H")
+
+    def _draw_barber_pole(self, painter: QPainter, body: QRectF, v: float, ppu: float):
+        """SPEED_BARBER_POLE_KPH 이상 구간에 빨강/검정 줄무늬 (실기의 최대속도 표시)."""
+        limit = getattr(config, "SPEED_BARBER_POLE_KPH", None)
+        if limit is None:
+            return
+        limit_y = body.center().y() - (limit - v) * ppu
+        if limit_y <= body.top():
+            return
+        strip = QRectF(body.right() - 8, body.top(), 8, min(limit_y, body.bottom()) - body.top())
+        painter.fillRect(strip, QColor(config.COLOR_BLACK))
+        painter.save()
+        painter.setClipRect(strip)
+        painter.setPen(QPen(QColor(config.COLOR_BARBER_POLE), 4))
+        yy = strip.top() - 12
+        while yy < strip.bottom() + 12:
+            painter.drawLine(QPointF(strip.left(), yy + 8), QPointF(strip.right(), yy))
+            yy += 12
+        painter.restore()
+
+    def _draw_speed_trend(self, painter: QPainter, body: QRectF, accel: float, ppu: float):
+        """SPEED_TREND_SEC 뒤 예상 속도까지 초록 화살표 (테이프 끝에서 멈춤)."""
+        delta = accel * config.SPEED_TREND_SEC
+        if abs(delta) < 1.0:
+            return
+        mid = body.center().y()
+        tip_y = min(max(mid - delta * ppu, body.top() + 4), body.bottom() - 4)
+        tx = body.right() - 3
+        painter.setPen(QPen(QColor(config.COLOR_SPEED_TREND), 2))
+        painter.drawLine(QPointF(tx, mid), QPointF(tx, tip_y))
+        d = -1 if delta > 0 else 1
+        painter.drawLine(QPointF(tx, tip_y), QPointF(tx - 4, tip_y - d * 7))
+        painter.drawLine(QPointF(tx, tip_y), QPointF(tx + 4, tip_y - d * 7))
+
+    def _draw_speed_bug(self, painter: QPainter, body: QRectF, v: float, target: float, ppu: float):
+        """SCC 설정속도 버그 (마젠타). 범위 밖이면 테이프 끝에 걸쳐 둠."""
+        by = min(max(body.center().y() - (target - v) * ppu, body.top() + 2), body.bottom() - 2)
+        left, right = body.right() - 7, body.right() + 5
+        painter.setPen(QPen(QColor(config.COLOR_SELECTED), 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPolygon(QPolygonF([
+            QPointF(left, by - 8), QPointF(right, by - 8), QPointF(right, by + 8),
+            QPointF(left, by + 8), QPointF(left + 5, by),
+        ]))
+
+    def _draw_speed_readout(self, painter: QPainter, body: QRectF, v: float):
+        """현재 속도 박스: 오른쪽(ADI 쪽) 포인터, 일의 자리 드럼, 십의 자리는 9->0 때만 굴러감."""
+        mid = body.center().y()
+        bl, br = body.left() + 2, body.right() - 4
+        dl = br - 30   # 드럼 창 왼쪽
+        outline = QPolygonF([
+            QPointF(bl, mid - 13), QPointF(dl, mid - 13), QPointF(dl, mid - 21),
+            QPointF(br, mid - 21), QPointF(br, mid - 6), QPointF(br + 9, mid),
+            QPointF(br, mid + 6), QPointF(br, mid + 21), QPointF(dl, mid + 21),
+            QPointF(dl, mid + 13), QPointF(bl, mid + 13),
+        ])
+        painter.setPen(QPen(QColor(config.COLOR_WHITE), 1.5))
+        painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
+        painter.drawPolygon(outline)
+
+        base = math.floor(v)
+        frac = v - base
+        units = base % 10
+        painter.setFont(self._font_readout)
+        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
+
+        def upper(n):
+            return str(n // 10) if n >= 10 else ""
+
+        upper_rect = QRectF(bl + 1, mid - 12, dl - bl - 2, 24)
+        align_r = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        painter.save()
+        painter.setClipRect(upper_rect)
+        if units == 9:
+            sp = 24
+            painter.drawText(upper_rect.translated(0, frac * sp), align_r, upper(base))
+            painter.drawText(upper_rect.translated(0, -(1 - frac) * sp), align_r, upper(base + 1))
+        else:
+            painter.drawText(upper_rect, align_r, upper(base))
+        painter.restore()
+
+        drum = QRectF(dl + 1, mid - 20, br - dl - 2, 40)
+        sp = 26
+        painter.save()
+        painter.setClipRect(drum)
+        for k in (-2, -1, 0, 1, 2):
+            n = base + k
+            if n < 0:
+                continue
+            cy = mid - (k - frac) * sp
+            painter.drawText(QRectF(dl, cy - 12, br - dl, 24), Qt.AlignmentFlag.AlignCenter, str(n % 10))
+        painter.restore()
 
     def _draw_altitude_tape(self, painter: QPainter):
-        self._draw_vertical_tape(
-            painter, config.ALT_TAPE_RECT, self.vm.vehicle.altitude_ft,
-            config.ALT_PIXELS_PER_UNIT, 100, ticks_on_right=True)
+        value = self.vm.vehicle.altitude_ft
+        ppu = config.ALT_PIXELS_PER_UNIT
+        top, body, bottom = self._tape_layout(config.ALT_TAPE_RECT)
+
+        painter.fillRect(body, QColor(config.COLOR_TAPE_BG))
+        painter.save()
+        painter.setClipRect(body)
+        self._draw_tape_scale(painter, body, value, ppu, config.ALT_TICK_STEP,
+                              config.ALT_LABEL_STEP, ticks_left=True)
+        painter.restore()
+        self._draw_altitude_readout(painter, body, value)
+
+        painter.fillRect(top, QColor(config.COLOR_BLACK))   # 실기의 선택 고도 자리 (차량은 없음)
+        painter.setFont(self._font_tape_unit)
+        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
+        painter.drawText(bottom, Qt.AlignmentFlag.AlignCenter, "FT")
+
+    def _draw_altitude_readout(self, painter: QPainter, body: QRectF, value: float):
+        """현재 고도 박스: 왼쪽(ADI 쪽) 포인터, 끝 두 자리는 20 단위 드럼(실기와 동일)."""
+        mid = body.center().y()
+        bl, br = body.left() + 6, body.right() - 2
+        dl = br - 24
+        outline = QPolygonF([
+            QPointF(bl, mid - 6), QPointF(bl - 9, mid), QPointF(bl, mid + 6),
+            QPointF(bl, mid + 13), QPointF(dl, mid + 13), QPointF(dl, mid + 21),
+            QPointF(br, mid + 21), QPointF(br, mid - 21), QPointF(dl, mid - 21),
+            QPointF(dl, mid - 13), QPointF(bl, mid - 13),
+        ])
+        painter.setPen(QPen(QColor(config.COLOR_WHITE), 1.5))
+        painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
+        painter.drawPolygon(outline)
+
+        step = 20
+        pos = value / step
+        base_i = math.floor(pos)
+        frac = pos - base_i
+        snapped = (base_i + (1 if frac >= 0.5 else 0)) * step
+        hundreds = abs(int(snapped)) // 100
+        sign = "-" if snapped < 0 else ""
+        upper_text = f"{sign}{hundreds}" if hundreds else sign
+
+        painter.setFont(self._font_readout)
+        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
+        painter.drawText(QRectF(bl + 1, mid - 12, dl - bl - 2, 24),
+                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, upper_text)
+
+        drum = QRectF(dl + 1, mid - 20, br - dl - 2, 40)
+        sp = 17
+        painter.setFont(self._font_readout_small)
+        painter.save()
+        painter.setClipRect(drum)
+        for k in (-2, -1, 0, 1, 2):
+            n = (base_i + k) * step
+            cy = mid - (k - frac) * sp
+            painter.drawText(QRectF(dl, cy - 10, br - dl, 20), Qt.AlignmentFlag.AlignCenter,
+                             f"{abs(n) % 100:02d}")
+        painter.restore()
+
+    def _draw_compass_disk(self, painter: QPainter):
+        """나침반 진회색 원판 + 바깥 원 (화면 아래로 잘려서 윗부분만 보임)."""
+        cx, cy = config.HEADING_ARC_CENTER
+        r = config.HEADING_ARC_RADIUS
+        center = QPointF(cx, cy)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(config.COLOR_HEADING_BG)))
+        painter.drawEllipse(center, r + 12, r + 12)
+        painter.setPen(QPen(QColor(config.COLOR_TAPE_TICK), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(center, r, r)
 
     def _draw_heading_arc(self, painter: QPainter):
+        """B737 NG 스타일 헤딩: 나침반 원판이 헤딩만큼 1:1로 회전, 위쪽 고정 포인터.
+        눈금 5°(짧게)/10°(길게), 숫자는 10° 마다 두 자리(24=240°),
+        0/90/180/270 은 N/E/S/W, 30° 단위는 조금 크게. 숫자는 원을 따라 기울임."""
         yaw = self.vm.attitude.yaw_deg
         cx, cy = config.HEADING_ARC_CENTER
         r = config.HEADING_ARC_RADIUS
-        half_span_heading = config.HEADING_ARC_SPAN_DEG / 2
-        half_span_visual = 40
+        self._draw_compass_disk(painter)
 
-        r_bg = r + 12
-        bg_rect = QRectF(cx - r_bg, cy - r_bg, r_bg * 2, r_bg * 2)
-        bg_path = QPainterPath()
-        bg_path.moveTo(cx + r_bg, cy)
-        bg_path.arcTo(bg_rect, 0, 180)
-        bg_path.closeSubpath()
+        white = QColor(config.COLOR_WHITE)
+        tick_pen = QPen(white, 1.5)
+        label_r = r - 26
+        for d in range(0, 360, 5):
+            rel = ((d - yaw + 180) % 360) - 180          # 현재 헤딩 기준 상대각 (+ = 오른쪽)
+            if abs(rel) > config.HEADING_VISIBLE_HALF_DEG:
+                continue
+            theta = math.radians(90 - rel)
+            cos_t, sin_t = math.cos(theta), math.sin(theta)
+            tick = 12 if d % 10 == 0 else 6
+            painter.setPen(tick_pen)
+            painter.drawLine(QPointF(cx + r * cos_t, cy - r * sin_t),
+                             QPointF(cx + (r - tick) * cos_t, cy - (r - tick) * sin_t))
+            if d % 10 == 0:
+                label = {0: "N", 90: "E", 180: "S", 270: "W"}.get(d, str(d // 10))
+                painter.save()
+                painter.translate(cx + label_r * cos_t, cy - label_r * sin_t)
+                painter.rotate(rel)
+                painter.setFont(self._font_compass_big if d % 30 == 0 else self._font_compass)
+                painter.setPen(QPen(white))
+                painter.drawText(QRectF(-14, -9, 28, 18), Qt.AlignmentFlag.AlignCenter, label)
+                painter.restore()
+
+        # 고정 포인터 (흰 삼각형) + 현재 헤딩 박스
+        top = cy - r
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor(config.COLOR_HEADING_BG)))
-        painter.drawPath(bg_path)
-
-        pen = QPen(QColor(config.COLOR_TAPE_BORDER), 1.5)
-        painter.setPen(pen)
-        rect = QRectF(cx - r, cy - r, r * 2, r * 2)
-        painter.drawArc(rect, 0, 180 * 16)
-
-        painter.setFont(self._font_small)
-        for delta in range(int(-half_span_heading), int(half_span_heading) + 1, 10):
-            theta_deg = 90 - (delta / half_span_heading) * half_span_visual
-            theta = math.radians(theta_deg)
-            x1 = cx + r * math.cos(theta)
-            y1 = cy - r * math.sin(theta)
-            x2 = cx + (r - 10) * math.cos(theta)
-            y2 = cy - (r - 10) * math.sin(theta)
-
-            painter.setPen(QPen(QColor(config.COLOR_WHITE), 1.2))
-            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-
-            heading_val = int(round((yaw + delta) % 360))
-            label_x = cx + (r - 24) * math.cos(theta)
-            label_y = cy - (r - 24) * math.sin(theta)
-            painter.drawText(QRectF(label_x - 13, label_y - 8, 26, 16),
-                              Qt.AlignmentFlag.AlignCenter, f"{heading_val:02d}")
-
-        painter.setBrush(QBrush(QColor(config.COLOR_WHITE)))
-        painter.setPen(Qt.PenStyle.NoPen)
-        pointer_top_y = cy - r - 10
-        pointer = QPolygonF([
-            QPointF(cx, pointer_top_y + 10),
-            QPointF(cx - 6, pointer_top_y),
-            QPointF(cx + 6, pointer_top_y),
-        ])
-        painter.drawPolygon(pointer)
-
-        box_rect = QRectF(cx - 26, pointer_top_y - 20, 52, 20)
-        painter.setPen(QPen(QColor(config.COLOR_WHITE), 1))
+        painter.setBrush(QBrush(white))
+        painter.drawPolygon(QPolygonF([
+            QPointF(cx, top + 11), QPointF(cx - 7, top - 1), QPointF(cx + 7, top - 1),
+        ]))
+        box_rect = QRectF(cx - 27, top - 24, 54, 21)
+        painter.setPen(QPen(white, 1.5))
         painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
         painter.drawRect(box_rect)
-        painter.setFont(self._font_value)
-        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
-        painter.drawText(box_rect, Qt.AlignmentFlag.AlignCenter, f"{int(round(yaw)):03d}")
+        painter.setFont(self._font_readout_heading)
+        painter.setPen(QPen(white))
+        painter.drawText(box_rect, Qt.AlignmentFlag.AlignCenter, f"{int(round(yaw)) % 360:03d}")

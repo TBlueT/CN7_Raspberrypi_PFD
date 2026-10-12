@@ -46,6 +46,7 @@ class PFDViewModel(QObject):
         # 데이터 유효성: 마지막 수신 시각 (None = 아직 한 번도 못 받음)
         self._attitude_time = None
         self._speed_time = None
+        self._speed_anim_last = None   # 애니메이션 틱 시각 (가속도 계산용)
 
         # 속도 표시 애니메이션용 타이머 - CAN 데이터 도착 빈도와 무관하게
         # 고정 주기로 표시값을 목표치 쪽으로 EMA(지수감쇠)로 부드럽게 수렴시킴
@@ -113,11 +114,20 @@ class PFDViewModel(QObject):
         self._speed_time = time.monotonic()
 
     def _on_speed_animation_tick(self):
+        now = time.monotonic()
+        dt = (now - self._speed_anim_last) if self._speed_anim_last is not None else 0.0
+        self._speed_anim_last = now
+
         current = self.vehicle.speed_kph
         target = self.vehicle.speed_kph_target
+        new = current + config.SPEED_SMOOTHING_ALPHA * (target - current)
+        self.vehicle.speed_kph = new
 
-        self.vehicle.prev_speed_kph = current
-        self.vehicle.speed_kph += config.SPEED_SMOOTHING_ALPHA * (target - current)
+        # 트렌드 화살표용 가속도: 표시 속도 변화율을 SPEED_ACCEL_SMOOTHING_SEC 로 평활
+        if dt > 0:
+            rate = (new - current) / dt
+            k = dt / (config.SPEED_ACCEL_SMOOTHING_SEC + dt)
+            self.vehicle.speed_accel_kph_s += k * (rate - self.vehicle.speed_accel_kph_s)
 
     def on_altitude_updated(self, value: float):
         """추후 고도 센서 연동 시 사용. 지금은 아무 곳에서도 호출 안 됨(항상 0)."""

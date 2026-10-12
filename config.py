@@ -25,9 +25,27 @@ ALT_TAPE_RECT = (324, 40, 66, 350)       # ADI 볼 오른쪽에 밀착
 SPEED_PIXELS_PER_UNIT = 3
 ALT_PIXELS_PER_UNIT = 0.15
 
-HEADING_ARC_CENTER = (200, 550)
-HEADING_ARC_RADIUS = 130
-HEADING_ARC_SPAN_DEG = 60
+# ---- 속도/고도 테이프 (B737 NG 스타일) ----
+# 테이프 영역 = 위 띠(SCC 설정속도) + 본체(눈금) + 아래 띠(단위)
+TAPE_TOP_STRIP_PX = 22
+TAPE_BOTTOM_STRIP_PX = 18
+SPEED_TICK_STEP = 10           # 눈금 간격 (km/h)
+SPEED_LABEL_STEP = 20          # 숫자 간격 (km/h)
+SPEED_TREND_SEC = 3.0          # 트렌드 화살표 = 이 시간 뒤 예상 속도 (실기 10초, 차는 가속이 빨라 3초)
+SPEED_ACCEL_SMOOTHING_SEC = 0.5   # 가속도 계산 평활 시간
+SPEED_BARBER_POLE_KPH = 110    # 이 속도 이상 빨강/검정 줄무늬 (None 이면 표시 안 함)
+ALT_TICK_STEP = 100
+ALT_LABEL_STEP = 200
+COLOR_TAPE_BG = "#4d5257"      # 테이프 회색 배경
+COLOR_SPEED_TREND = "#2fd646"  # 트렌드 화살표 (초록)
+COLOR_SELECTED = "#e05ae0"     # SCC 설정속도 숫자/버그 (마젠타)
+COLOR_BARBER_POLE = "#e02020"
+
+# 헤딩 나침반 (B737 NG 스타일, 1:1 회전). 반지름을 크게 하고 중심을 화면 아래로
+# 내려서 윗변(y = 중심 - 반지름 = 420)은 그대로 두고 10° 숫자가 겹치지 않게 함
+HEADING_ARC_CENTER = (200, 640)
+HEADING_ARC_RADIUS = 220
+HEADING_VISIBLE_HALF_DEG = 55    # 그릴 범위 (화면에는 약 ±45° 보임)
 
 # ---- ND(레이더) 패널 레이아웃 (전방 180도 반원) ----
 ND_CENTER = (200, 460)        # 반원의 밑변 중심점 (패널 하단 쪽)
@@ -51,7 +69,7 @@ SONY_QX10_FIXED_ENDPOINT_URL = None
 # `ip link show`/`nmcli device status`로 실제 카메라가 붙은 인터페이스명 확인.
 SONY_QX10_WIFI_INTERFACE = "wlan1"
 CAMERA_HORIZONTAL_FOV_DEG = 75.0     # 쓰시는 웹캠 스펙에 맞춰 조정
-CAMERA_DETECT_MODEL_PATH = "yolo26s.pt"          # 차량/사람 탐지(바운딩박스+클래스)
+CAMERA_DETECT_MODEL_PATH = "yolo26n.pt"          # 차량/사람 탐지(바운딩박스+클래스)
 CAMERA_RECONNECT_INTERVAL_SEC = 2.0
 CAMERA_DEPTH_MAX_RANGE_M = 50.0      # 화면 가장자리(ND_RADIUS)에 대응하는 거리
 ND_RANGE_RING_STEP_M = 10.0          # ND 거리 링 간격 (10, 20, 30 ... m)
@@ -172,7 +190,6 @@ COLOR_WHITE = "#e8e8e8"
 COLOR_BLACK = "#000000"
 COLOR_TAPE_BORDER = "#4a4a4a"
 COLOR_TAPE_TICK = "#666666"
-COLOR_CURRENT_VALUE_BG = "#00c8c8"   # 사이언
 COLOR_MODE_TEXT = "#2fd646"          # 초록 (활성 상태)
 COLOR_MODE_TEXT_OFF = "#555555"      # 회색 (비활성 상태)
 COLOR_WARN_TEXT = "#f0997b"
@@ -182,8 +199,7 @@ COLOR_FAIL_FLAG = "#f0a020"         # 데이터 끊김 고장 표시 (ATT/HDG/SP
 # ---- 데이터 유효성 (이 시간 동안 새 값이 없으면 고장 표시) ----
 IMU_STALE_SEC = 0.5      # 자세(ATT)/헤딩(HDG)
 SPEED_STALE_SEC = 3.0    # 속도(SPD) - OBD 폴링 약 0.7초 간격
-COLOR_HEADING_BG = "#333333"         # 헤딩 아크 배경 (시인성 확보용 회색)
-COLOR_TREND = "#f0a020"              # 속도 트렌드 화살표
+COLOR_HEADING_BG = "#3a3d40"         # 헤딩 나침반 원판 (진회색)
 COLOR_ND_BG = "#0a0a0a"
 COLOR_ND_RING = "#2a2a2a"
 
