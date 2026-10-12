@@ -121,7 +121,7 @@ OBD_RECONNECT_INTERVAL_SEC = 0.1
 # 이 속도(초당 km/h)로만 목표치를 향해 부드럽게 움직임
 # 속도 표시를 EMA(지수감쇠) 방식으로 부드럽게 (롤/피치와 같은 방식 -
 # 목표치에 가까워질수록 자연스럽게 감속하며 수렴, 등속+급정지 없음)
-SPEED_SMOOTHING_ALPHA = 0.08
+SPEED_SMOOTHING_ALPHA = 0.06
 
 # ---- 인포카 BLE 연결 정보 (ble_scan.py로 확인됨) ----
 OBD_BLE_ADDRESS = "66:1E:11:14:04:63"     # Infocar-OH-03, 재스캔 시 바뀔 수 있으니 안 붙으면 ble_scan.py 재실행
