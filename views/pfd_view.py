@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import QWidget
 
 import config
 from viewmodels.pfd_viewmodel import PFDViewModel
+from views.fail_flag import draw_fail_flag
 
 
 class PFDView(QWidget):
@@ -47,6 +48,8 @@ class PFDView(QWidget):
         self._font_small = QFont("sans-serif", 10)
         self._font_medium = QFont("sans-serif", 10)
         self._font_value = QFont("sans-serif", 15, QFont.Weight.Medium)
+        self._font_flag_big = QFont("sans-serif", 18, QFont.Weight.Bold)
+        self._font_flag = QFont("sans-serif", 14, QFont.Weight.Bold)
 
     # ---------------------------------------------------------------
     def paintEvent(self, event):
@@ -55,14 +58,64 @@ class PFDView(QWidget):
         painter.fillRect(self.rect(), QColor(config.COLOR_BLACK))
 
         self._draw_fma_bar(painter)
-        self._draw_adi_ball(painter)
-        self._draw_aircraft_symbol(painter)
-        self._draw_bank_indicator(painter)
-        self._draw_speed_tape(painter)
+        if self.vm.attitude_valid:
+            self._draw_adi_ball(painter)
+            self._draw_aircraft_symbol(painter)
+            self._draw_bank_indicator(painter)
+        else:
+            self._draw_attitude_fail(painter)
+        if self.vm.speed_valid:
+            self._draw_speed_tape(painter)
+        else:
+            self._draw_speed_fail(painter)
         self._draw_altitude_tape(painter)
-        self._draw_heading_arc(painter)
+        if self.vm.heading_valid:
+            self._draw_heading_arc(painter)
+        else:
+            self._draw_heading_fail(painter)
 
         painter.end()
+
+    # ---------------------------------------------------------------
+    # 데이터 끊김 고장 표시 (IMU -> ATT/HDG, OBD -> SPD)
+    # ---------------------------------------------------------------
+    def _draw_attitude_fail(self, painter: QPainter):
+        """자세 데이터 없음: ADI 볼을 비우고(지평선/피치/뱅크 포인터 제거) 가운데 ATT."""
+        ball_rect = QRectF(*config.ADI_BALL_RECT)
+        painter.setPen(QPen(QColor(config.COLOR_TAPE_BORDER), 2))
+        painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
+        painter.drawRoundedRect(ball_rect, 10, 10)
+        draw_fail_flag(painter, QPointF(*config.ADI_CENTER), "ATT", self._font_flag_big)
+
+    def _draw_speed_fail(self, painter: QPainter):
+        """속도 데이터 없음: 테이프 눈금/현재값을 지우고 가운데 SPD."""
+        x, y, w, h = config.SPEED_TAPE_RECT
+        rect = QRectF(x, y, w, h)
+        painter.setPen(QPen(QColor(config.COLOR_TAPE_BORDER), 2))
+        painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
+        painter.drawRect(rect)
+        draw_fail_flag(painter, rect.center(), "SPD", self._font_flag)
+
+    def _draw_heading_fail(self, painter: QPainter):
+        """헤딩 데이터 없음: 아크 배경/테두리만 남기고 눈금/숫자 대신 HDG."""
+        cx, cy = config.HEADING_ARC_CENTER
+        r = config.HEADING_ARC_RADIUS
+        r_bg = r + 12
+        bg_rect = QRectF(cx - r_bg, cy - r_bg, r_bg * 2, r_bg * 2)
+        bg_path = QPainterPath()
+        bg_path.moveTo(cx + r_bg, cy)
+        bg_path.arcTo(bg_rect, 0, 180)
+        bg_path.closeSubpath()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(config.COLOR_HEADING_BG)))
+        painter.drawPath(bg_path)
+        painter.setPen(QPen(QColor(config.COLOR_TAPE_BORDER), 1.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawArc(QRectF(cx - r, cy - r, r * 2, r * 2), 0, 180 * 16)
+
+        # 평소 헤딩 숫자 박스 자리에 표시
+        pointer_top_y = cy - r - 10
+        draw_fail_flag(painter, QPointF(cx, pointer_top_y - 10), "HDG", self._font_flag)
 
     # ---------------------------------------------------------------
     def _draw_fma_bar(self, painter: QPainter):

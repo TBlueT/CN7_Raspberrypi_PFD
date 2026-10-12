@@ -221,7 +221,7 @@ def console_report(event, **kw):
 # 화면 모드 (자식 프로세스: launcher.py --ui)
 # =====================================================================
 def run_ui() -> int:
-    from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
+    from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
     from PyQt6.QtGui import QColor, QFont, QPainter, QPen
     from PyQt6.QtWidgets import QApplication, QWidget
 

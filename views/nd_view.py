@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import QWidget
 
 import config
 from viewmodels.nd_viewmodel import NDViewModel
+from views.fail_flag import draw_fail_flag
 
 
 class NDView(QWidget):
@@ -210,6 +211,11 @@ class NDView(QWidget):
         heading = self.vm.heading_deg
 
         box_rect = QRectF(cx - 25, cy - r - 43, 50, 18)
+        if not self.vm.heading_valid:
+            # IMU 헤딩 끊김: 숫자 박스를 덮고 HDG 고장 표시
+            painter.fillRect(box_rect.adjusted(-2, -2, 2, 2), QColor(config.COLOR_BLACK))
+            draw_fail_flag(painter, box_rect.center(), "HDG", self._font_value)
+            return
         painter.setFont(self._font_value)
         painter.setPen(QPen(QColor(config.COLOR_WHITE)))
         painter.drawText(box_rect, Qt.AlignmentFlag.AlignCenter, f"{int(round(heading)):03d}")

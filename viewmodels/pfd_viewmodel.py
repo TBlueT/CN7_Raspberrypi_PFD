@@ -43,6 +43,10 @@ class PFDViewModel(QObject):
         self._smoothed_pitch = 0.0
         self._smoothed_yaw = 0.0
 
+        # 데이터 유효성: 마지막 수신 시각 (None = 아직 한 번도 못 받음)
+        self._attitude_time = None
+        self._speed_time = None
+
         # 속도 표시 애니메이션용 타이머 - CAN 데이터 도착 빈도와 무관하게
         # 고정 주기로 표시값을 목표치 쪽으로 EMA(지수감쇠)로 부드럽게 수렴시킴
         self._speed_anim_timer = QTimer(self)
@@ -71,6 +75,7 @@ class PFDViewModel(QObject):
         yaw_deg = yaw_deg % 360.0
 
         now = time.monotonic()
+        self._attitude_time = now
         dt = (now - self._ahrs_last_time) if self._ahrs_last_time is not None else None
         self._ahrs_last_time = now
 
@@ -105,6 +110,7 @@ class PFDViewModel(QObject):
         """CAN에서 새 속도가 오면 목표치만 갱신. 화면에 실제 반영되는 값은
         _on_speed_animation_tick()이 매 프레임 조금씩 따라가며 처리."""
         self.vehicle.speed_kph_target = value
+        self._speed_time = time.monotonic()
 
     def _on_speed_animation_tick(self):
         current = self.vehicle.speed_kph
@@ -127,3 +133,23 @@ class PFDViewModel(QObject):
 
     def on_hda_curve_updated(self, active: bool):
         self.vehicle.hda_curve_active = active
+
+    # ---- 데이터 유효성 (View 가 매 프레임 확인) ----
+    @staticmethod
+    def _is_fresh(t, limit_sec: float) -> bool:
+        return t is not None and (time.monotonic() - t) <= limit_sec
+
+    @property
+    def attitude_valid(self) -> bool:
+        """IMU 자세 데이터가 IMU_STALE_SEC 이내에 들어왔는지 (False면 ATT 표시)"""
+        return self._is_fresh(self._attitude_time, config.IMU_STALE_SEC)
+
+    @property
+    def heading_valid(self) -> bool:
+        """헤딩(요)도 같은 IMU 줄에서 오므로 자세와 같은 기준 (False면 HDG 표시)"""
+        return self.attitude_valid
+
+    @property
+    def speed_valid(self) -> bool:
+        """OBD 속도가 SPEED_STALE_SEC 이내에 들어왔는지 (False면 SPD 표시)"""
+        return self._is_fresh(self._speed_time, config.SPEED_STALE_SEC)

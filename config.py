@@ -51,7 +51,7 @@ SONY_QX10_FIXED_ENDPOINT_URL = None
 # `ip link show`/`nmcli device status`로 실제 카메라가 붙은 인터페이스명 확인.
 SONY_QX10_WIFI_INTERFACE = "wlan1"
 CAMERA_HORIZONTAL_FOV_DEG = 75.0     # 쓰시는 웹캠 스펙에 맞춰 조정
-CAMERA_DETECT_MODEL_PATH = "yolo26s.pt"          # 차량/사람 탐지(바운딩박스+클래스)
+CAMERA_DETECT_MODEL_PATH = "yolo26n.pt"          # 차량/사람 탐지(바운딩박스+클래스)
 CAMERA_RECONNECT_INTERVAL_SEC = 2.0
 CAMERA_DEPTH_MAX_RANGE_M = 50.0      # 화면 가장자리(ND_RADIUS)에 대응하는 거리
 ND_RANGE_RING_STEP_M = 10.0          # ND 거리 링 간격 (10, 20, 30 ... m)
@@ -177,6 +177,11 @@ COLOR_MODE_TEXT = "#2fd646"          # 초록 (활성 상태)
 COLOR_MODE_TEXT_OFF = "#555555"      # 회색 (비활성 상태)
 COLOR_WARN_TEXT = "#f0997b"
 COLOR_ND_INFO = "#00c8c8"           # ND 진행 상태 문구 (모델 준비 중)
+COLOR_FAIL_FLAG = "#f0a020"         # 데이터 끊김 고장 표시 (ATT/HDG/SPD, 보잉 계기 관례 주황)
+
+# ---- 데이터 유효성 (이 시간 동안 새 값이 없으면 고장 표시) ----
+IMU_STALE_SEC = 0.5      # 자세(ATT)/헤딩(HDG)
+SPEED_STALE_SEC = 3.0    # 속도(SPD) - OBD 폴링 약 0.7초 간격
 COLOR_HEADING_BG = "#333333"         # 헤딩 아크 배경 (시인성 확보용 회색)
 COLOR_TREND = "#f0a020"              # 속도 트렌드 화살표
 COLOR_ND_BG = "#0a0a0a"

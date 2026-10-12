@@ -12,6 +12,7 @@ import time
 
 from PyQt6.QtCore import QObject
 
+import config
 from models.scan_model import ScanModel
 
 
@@ -19,6 +20,7 @@ class NDViewModel(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.heading_deg = 0.0
+        self._heading_time = None   # 마지막 헤딩 수신 시각 (None = 아직 못 받음)
         self.scan = ScanModel()
         # "disconnected" / "camera_error" / "connected" - 초기값은 아직
         # 한 번도 연결 시도 결과를 못 받은 상태이므로 "disconnected"로 시작
@@ -32,6 +34,7 @@ class NDViewModel(QObject):
     # ---- services.imu_reader.ImuReaderThread.attitude_updated 에 연결 (yaw만 사용) ----
     def on_heading_updated(self, yaw_deg: float):
         self.heading_deg = yaw_deg % 360.0
+        self._heading_time = time.monotonic()
 
     # ---- services.camera_depth_reader.CameraDepthReaderThread.scan_updated 에 연결 ----
     # (예전 services.lidar_reader.LidarReaderThread.scan_updated 와 완전히 같은 인터페이스)
@@ -48,3 +51,9 @@ class NDViewModel(QObject):
         self.model_state = state
         self.model_lines = lines
         self.model_status_time = time.monotonic()
+
+    @property
+    def heading_valid(self) -> bool:
+        """IMU 헤딩이 IMU_STALE_SEC 이내에 들어왔는지 (False면 헤딩 박스에 HDG 표시)"""
+        return (self._heading_time is not None
+                and time.monotonic() - self._heading_time <= config.IMU_STALE_SEC)

@@ -228,7 +228,7 @@ class CameraDepthReaderThread(QThread):
             return
 
         self.status_updated.emit("connected")
-        self.connection_error.emit(f"카메라 연결 및 추론 시작됨 (depth=Lite-Mono)")
+        self.connection_error.emit("카메라 연결 및 추론 시작됨 (depth=Lite-Mono)")
 
         try:
             while self._running:
