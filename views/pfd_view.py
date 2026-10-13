@@ -31,6 +31,10 @@ from views.fail_flag import draw_fail_flag
 
 
 class PFDView(QWidget):
+    # 속도/고도 현재값 박스 크기 (두 박스 공통, 포인터 제외)
+    READOUT_BOX_W = 58
+    READOUT_DRUM_W = 24
+
     def __init__(self, viewmodel: PFDViewModel, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
@@ -384,8 +388,10 @@ class PFDView(QWidget):
     def _draw_speed_readout(self, painter: QPainter, body: QRectF, v: float):
         """현재 속도 박스: 오른쪽(ADI 쪽) 포인터, 일의 자리 드럼, 십의 자리는 9->0 때만 굴러감."""
         mid = body.center().y()
-        bl, br = body.left() + 2, body.right() - 4
-        dl = br - 30   # 드럼 창 왼쪽
+        # 박스 크기는 고도 박스와 동일 (READOUT_BOX_W / READOUT_DRUM_W)
+        bl = body.left() + 2
+        br = bl + self.READOUT_BOX_W
+        dl = br - self.READOUT_DRUM_W   # 드럼 창 왼쪽
         outline = QPolygonF([
             QPointF(bl, mid - 13), QPointF(dl, mid - 13), QPointF(dl, mid - 21),
             QPointF(br, mid - 21), QPointF(br, mid - 6), QPointF(br + 9, mid),
@@ -399,7 +405,7 @@ class PFDView(QWidget):
         base = math.floor(v)
         frac = v - base
         units = base % 10
-        painter.setFont(self._font_readout)
+        painter.setFont(self._font_readout_small)   # 고도 박스 숫자와 같은 크기
         painter.setPen(QPen(QColor(config.COLOR_WHITE)))
 
         def upper(n):
@@ -410,7 +416,7 @@ class PFDView(QWidget):
         painter.save()
         painter.setClipRect(upper_rect)
         if units == 9:
-            sp = 24
+            sp = 17
             painter.drawText(upper_rect.translated(0, frac * sp), align_r, upper(base))
             painter.drawText(upper_rect.translated(0, -(1 - frac) * sp), align_r, upper(base + 1))
         else:
@@ -420,7 +426,6 @@ class PFDView(QWidget):
         # 드럼 숫자는 고도 박스 드럼과 같은 크기/간격 (12pt, 17px)
         drum = QRectF(dl + 1, mid - 20, br - dl - 2, 40)
         sp = 17
-        painter.setFont(self._font_readout_small)
         painter.save()
         painter.setClipRect(drum)
         for k in (-2, -1, 0, 1, 2):
@@ -452,8 +457,9 @@ class PFDView(QWidget):
     def _draw_altitude_readout(self, painter: QPainter, body: QRectF, value: float):
         """현재 고도 박스: 왼쪽(ADI 쪽) 포인터, 끝 두 자리는 20 단위 드럼(실기와 동일)."""
         mid = body.center().y()
-        bl, br = body.left() + 6, body.right() - 2
-        dl = br - 24
+        br = body.right() - 2
+        bl = br - self.READOUT_BOX_W
+        dl = br - self.READOUT_DRUM_W
         outline = QPolygonF([
             QPointF(bl, mid - 6), QPointF(bl - 9, mid), QPointF(bl, mid + 6),
             QPointF(bl, mid + 13), QPointF(dl, mid + 13), QPointF(dl, mid + 21),
