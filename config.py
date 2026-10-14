@@ -69,7 +69,7 @@ SONY_QX10_FIXED_ENDPOINT_URL = None
 # `ip link show`/`nmcli device status`로 실제 카메라가 붙은 인터페이스명 확인.
 SONY_QX10_WIFI_INTERFACE = "wlan1"
 CAMERA_HORIZONTAL_FOV_DEG = 75.0     # 쓰시는 웹캠 스펙에 맞춰 조정
-CAMERA_DETECT_MODEL_PATH = "yolo26s.pt"          # 차량/사람 탐지(바운딩박스+클래스)
+CAMERA_DETECT_MODEL_PATH = "yolo26n.pt"          # 차량/사람 탐지(바운딩박스+클래스)
 CAMERA_RECONNECT_INTERVAL_SEC = 2.0
 CAMERA_DEPTH_MAX_RANGE_M = 50.0      # 화면 가장자리(ND_RADIUS)에 대응하는 거리
 ND_RANGE_RING_STEP_M = 10.0          # ND 거리 링 간격 (10, 20, 30 ... m)
@@ -121,7 +121,7 @@ OBD_RECONNECT_INTERVAL_SEC = 0.1
 # 이 속도(초당 km/h)로만 목표치를 향해 부드럽게 움직임
 # 속도 표시를 EMA(지수감쇠) 방식으로 부드럽게 (롤/피치와 같은 방식 -
 # 목표치에 가까워질수록 자연스럽게 감속하며 수렴, 등속+급정지 없음)
-SPEED_SMOOTHING_ALPHA = 0.06
+SPEED_SMOOTHING_ALPHA = 0.08
 
 # ---- 인포카 BLE 연결 정보 (ble_scan.py로 확인됨) ----
 OBD_BLE_ADDRESS = "66:1E:11:14:04:63"     # Infocar-OH-03, 재스캔 시 바뀔 수 있으니 안 붙으면 ble_scan.py 재실행
@@ -171,6 +171,25 @@ IMU_STABILIZATION_CHECK_COMMAND = "<savc1>"
 # Ki: 적분 보정 강도 (0.0이면 안 씀 - 기본값 권장)
 MAHONY_KP = 0.3
 MAHONY_KI = 0.0
+
+# ---- 원심력 / 가감속 보정 (OBD 속도 사용, 항공 AHRS 의 속도 보정과 같은 원리) ----
+# 회전 중 가속도계에 섞이는 원심 가속도(= 속도 x 요레이트)와 가감속(= 속도 변화율)을
+# 빼고 나서 Mahony 필터에 넣음. OBD 속도가 끊기면(SPEED_STALE_SEC) 보정 없이 동작.
+AHRS_CENTRIPETAL_COMP = True      # 좌우: 원심력 보정 (롤)
+AHRS_LONGITUDINAL_COMP = True     # 앞뒤: 가감속 보정 (피치)
+ACCEL_UNIT_IS_G = True            # 가속도 원시값 단위가 g 인지 (m/s² 면 False)
+# 차량 기준 축 매핑 (0=x, 1=y, 2=z, GYRO_SIGN/ACCEL_SIGN 적용 후 기준)
+#   부호는 "왼쪽 = +", "앞(가속) = +" 가 되도록. 요레이트 자이로는 좌회전이 + 가정
+IMU_LATERAL_AXIS = 1
+IMU_LATERAL_SIGN = 1.0
+IMU_LONGITUDINAL_AXIS = 0
+IMU_LONGITUDINAL_SIGN = 1.0
+IMU_YAW_RATE_AXIS = 2
+SPEED_DERIV_SMOOTHING_SEC = 0.5   # OBD 속도 변화율(가감속) 평활 시간 (짧을수록 빠르지만 흔들림↑)
+# 회전할 때마다 "실측 좌우 가속도 / 계산 원심력" 비율을 [AHRS] 로그로 출력 (축·부호 점검용)
+#   +1 근처 = 정상, -1 근처 = IMU_LATERAL_SIGN 반대로, 0 근처 = 축(IMU_LATERAL_AXIS) 틀림,
+#   약 9.8 또는 0.1 = ACCEL_UNIT_IS_G 반대로
+AHRS_COMP_DIAGNOSTIC = True
 
 # 필터로 계산한 값에 잔여 노이즈 제거용으로 추가로 얹는 가벼운 EMA 스무딩.
 # 1.0이면 스무딩 없음(원값 그대로), 작을수록 더 부드럽지만 반응은 느려짐.
