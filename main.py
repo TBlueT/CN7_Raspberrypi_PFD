@@ -65,6 +65,7 @@ class MainWindow(QMainWindow):
 
         self.can_thread = CanMonitorThread()
         self.can_thread.speed_updated.connect(self.pfd_vm.on_speed_updated)
+        self.can_thread.rpm_updated.connect(self.pfd_vm.on_rpm_updated)
         self.can_thread.scc_status_updated.connect(self.pfd_vm.on_scc_status_updated)
         self.can_thread.lfa_status_updated.connect(self.pfd_vm.on_lfa_status_updated)
         self.can_thread.hda_curve_updated.connect(self.pfd_vm.on_hda_curve_updated)

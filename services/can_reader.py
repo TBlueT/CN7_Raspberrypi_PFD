@@ -1,6 +1,9 @@
 """
 인포카 BLE OBD 어댑터(FFF0 서비스, FFF1=notify RX, FFF2=write TX)를 통해
-표준 OBD PID 요청-응답으로 차량 속도만 가져옵니다.
+표준 OBD PID 요청-응답으로 차량 속도(010D)와 엔진 RPM(010C)을 가져옵니다.
+
+요청을 보낸 뒤 고정 시간을 기다리지 않고, ELM327 이 응답 끝에 보내는 프롬프트
+문자('>')가 오면 바로 다음 요청을 보냅니다 (최대 OBD_RESPONSE_TIMEOUT_SEC 대기).
 
 배경: 이 어댑터는 raw CAN 버스 모니터 모드(ATMA)를 지원하지 않는 저가 클론으로
 확인되어(표준 PID 요청-응답만 동작), SCC/LFA/HDA 같은 제조사 고유 CAN 메시지는
@@ -22,10 +25,13 @@ import config
 
 # "41 0D XX" (표준 PID 0D 응답: 속도, km/h) 패턴. 사이사이 공백/개행/프롬프트(>) 섞여도 매칭되게 함.
 _SPEED_RESPONSE_PATTERN = re.compile(r"41\s*0D\s*([0-9A-Fa-f]{2})")
+# "41 0C AA BB" (표준 PID 0C 응답: 엔진 RPM = (AA*256 + BB) / 4)
+_RPM_RESPONSE_PATTERN = re.compile(r"41\s*0C\s*([0-9A-Fa-f]{2})\s*([0-9A-Fa-f]{2})")
 
 
 class CanMonitorThread(QThread):
     speed_updated = pyqtSignal(float)                      # km/h
+    rpm_updated = pyqtSignal(float)                        # 엔진 RPM
     scc_status_updated = pyqtSignal(bool, bool, float)      # main_on, active, set_speed_kph (지금은 미사용)
     lfa_status_updated = pyqtSignal(bool)                   # active (지금은 미사용)
     hda_curve_updated = pyqtSignal(bool)                    # active (지금은 미사용)
@@ -38,6 +44,7 @@ class CanMonitorThread(QThread):
         self._rx_uuid = rx_uuid or config.OBD_BLE_RX_CHAR_UUID
         self._running = False
         self._rx_buffer = b""
+        self._prompt_event = None   # 응답 끝 프롬프트('>') 수신 알림 (asyncio 루프 안에서 생성)
 
     def run(self):
         self._running = True
@@ -80,6 +87,7 @@ class CanMonitorThread(QThread):
         if client is None:
             raise BleakError(f"주소 {self._address} 기기를 못 찾음 (전원/거리 확인 필요)")
 
+        self._prompt_event = asyncio.Event()
         try:
             await client.start_notify(self._rx_uuid, self._on_notify)
 
@@ -87,22 +95,36 @@ class CanMonitorThread(QThread):
             await self._send_at(client, "ATE0")
             await self._send_at(client, "ATL0")
             await self._send_at(client, "ATSP6")   # 현대차 표준: CAN 11bit 500kbps 고정
-            self.connection_error.emit("초기화 완료, 속도 폴링 시작")
+            self.connection_error.emit("초기화 완료, 속도/RPM 폴링 시작")
 
             while self._running and client.is_connected:
-                self._rx_buffer = b""
-                await client.write_gatt_char(self._tx_uuid, b"010D\r", response=True)
-                await asyncio.sleep(0.4)  # 응답 도착 대기
-
-                match = _SPEED_RESPONSE_PATTERN.search(
-                    self._rx_buffer.decode("ascii", errors="ignore"))
+                text = await self._request(client, "010D")
+                match = _SPEED_RESPONSE_PATTERN.search(text)
                 if match:
-                    speed_kph = int(match.group(1), 16)
-                    self.speed_updated.emit(float(speed_kph))
+                    self.speed_updated.emit(float(int(match.group(1), 16)))
 
-                await asyncio.sleep(0.3)  # 폴링 간격 (너무 빠르면 어댑터가 못 따라갈 수 있음)
+                if config.OBD_POLL_RPM:
+                    text = await self._request(client, "010C")
+                    match = _RPM_RESPONSE_PATTERN.search(text)
+                    if match:
+                        rpm = (int(match.group(1), 16) * 256 + int(match.group(2), 16)) / 4.0
+                        self.rpm_updated.emit(rpm)
+
+                await asyncio.sleep(config.OBD_POLL_INTERVAL_SEC)
         finally:
             await client.disconnect()
+
+    async def _request(self, client: BleakClient, command: str) -> str:
+        """명령을 보내고 프롬프트('>')가 올 때까지(최대 OBD_RESPONSE_TIMEOUT_SEC) 기다린 뒤
+        받은 응답 문자열을 반환."""
+        self._rx_buffer = b""
+        self._prompt_event.clear()
+        await client.write_gatt_char(self._tx_uuid, (command + "\r").encode("ascii"), response=True)
+        try:
+            await asyncio.wait_for(self._prompt_event.wait(), config.OBD_RESPONSE_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            pass
+        return self._rx_buffer.decode("ascii", errors="ignore")
 
     async def _send_at(self, client: BleakClient, command: str, wait_sec: float = 0.3):
         await client.write_gatt_char(self._tx_uuid, (command + "\r").encode("ascii"), response=True)
@@ -112,6 +134,8 @@ class CanMonitorThread(QThread):
         self._rx_buffer += bytes(data)
         if len(self._rx_buffer) > 256:
             self._rx_buffer = self._rx_buffer[-256:]
+        if b">" in data and self._prompt_event is not None:
+            self._prompt_event.set()
 
     def stop(self):
         self._running = False

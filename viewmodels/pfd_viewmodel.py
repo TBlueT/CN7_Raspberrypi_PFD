@@ -49,6 +49,8 @@ class PFDViewModel(QObject):
         self._attitude_time = None
         self._speed_time = None
         self._speed_anim_last = None   # 애니메이션 틱 시각 (가속도 계산용)
+        self._overspeed_since = None   # 과속 시작 시각 (None = 과속 아님)
+        self._rpm_time = None          # 마지막 RPM 수신 시각
 
         # 가감속 보정용: OBD 속도 변화율 (m/s², 평활)
         self._long_accel_mps2 = 0.0
@@ -203,9 +205,29 @@ class PFDViewModel(QObject):
             k = dt / (config.SPEED_ACCEL_SMOOTHING_SEC + dt)
             self.vehicle.speed_accel_kph_s += k * (rate - self.vehicle.speed_accel_kph_s)
 
-    def on_altitude_updated(self, value: float):
-        """추후 고도 센서 연동 시 사용. 지금은 아무 곳에서도 호출 안 됨(항상 0)."""
-        self.vehicle.altitude_ft = value
+        self._update_overspeed(now)
+
+        # RPM 표시값도 같은 타이머로 평활 (OBD 는 0.5초 이상 간격으로 옴)
+        self.vehicle.rpm += config.RPM_SMOOTHING_ALPHA * (self.vehicle.rpm_target - self.vehicle.rpm)
+
+    def _update_overspeed(self, now: float):
+        """표시 속도 기준 과속 판정. 한계 이상이면 시작, 한계 - HYST 아래로 내려가면 해제
+        (한계 근처에서 경고가 켜졌다 꺼졌다 반복하지 않도록)."""
+        limit = getattr(config, "SPEED_BARBER_POLE_KPH", None)
+        if limit is None or not self.speed_valid:
+            self._overspeed_since = None
+            return
+        v = self.vehicle.speed_kph
+        if self._overspeed_since is None:
+            if v >= limit:
+                self._overspeed_since = now
+        elif v < limit - config.SPEED_OVERSPEED_HYST_KPH:
+            self._overspeed_since = None
+
+    # ---- services.can_reader.CanMonitorThread.rpm_updated 에 연결 ----
+    def on_rpm_updated(self, value: float):
+        self.vehicle.rpm_target = value
+        self._rpm_time = time.monotonic()
 
     def on_scc_status_updated(self, main_on: bool, active: bool, set_speed: float):
         self.vehicle.scc_main_on = main_on
@@ -232,6 +254,22 @@ class PFDViewModel(QObject):
     def heading_valid(self) -> bool:
         """헤딩(요)도 같은 IMU 줄에서 오므로 자세와 같은 기준 (False면 HDG 표시)"""
         return self.attitude_valid
+
+    @property
+    def rpm_valid(self) -> bool:
+        """OBD RPM 이 RPM_STALE_SEC 이내에 들어왔는지 (False면 RPM 고장 표시)"""
+        return self._is_fresh(self._rpm_time, config.RPM_STALE_SEC)
+
+    @property
+    def overspeed(self) -> bool:
+        return self._overspeed_since is not None
+
+    @property
+    def overspeed_elapsed(self):
+        """과속이 시작된 뒤 지난 시간(초). 과속 아니면 None (View 의 깜빡임 계산용)."""
+        if self._overspeed_since is None:
+            return None
+        return time.monotonic() - self._overspeed_since
 
     @property
     def speed_valid(self) -> bool:

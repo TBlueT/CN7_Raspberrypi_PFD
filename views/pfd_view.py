@@ -16,7 +16,7 @@ viewmodels.pfd_viewmodel.PFDViewModel의 model(attitude/vehicle)만 읽어서
 - 상단 FMA(비행모드 어나운시에이터) 스타일 모드바
 - 속도 테이프에 트렌드 화살표 추가
 
-고도는 아직 센서가 없으므로 항상 0 고정 표시
+오른쪽 테이프는 엔진 RPM (예전 고도 테이프 자리, OBD PID 010C)
 """
 
 import math
@@ -56,6 +56,7 @@ class PFDView(QWidget):
         self._font_flag = QFont("sans-serif", 14, QFont.Weight.Bold)
         self._font_tape = QFont("sans-serif", 11, QFont.Weight.Bold)
         self._font_tape_unit = QFont("sans-serif", 9, QFont.Weight.Bold)
+        self._font_overspeed = QFont("sans-serif", 7, QFont.Weight.Bold)
         self._font_readout = QFont("sans-serif", 16, QFont.Weight.Bold)
         self._font_readout_small = QFont("sans-serif", 12, QFont.Weight.Bold)
         self._font_selected = QFont("sans-serif", 14, QFont.Weight.Bold)
@@ -80,7 +81,10 @@ class PFDView(QWidget):
             self._draw_speed_tape(painter)
         else:
             self._draw_speed_fail(painter)
-        self._draw_altitude_tape(painter)
+        if self.vm.rpm_valid:
+            self._draw_rpm_tape(painter)
+        else:
+            self._draw_rpm_fail(painter)
         if self.vm.heading_valid:
             self._draw_heading_arc(painter)
         else:
@@ -89,7 +93,7 @@ class PFDView(QWidget):
         painter.end()
 
     # ---------------------------------------------------------------
-    # 데이터 끊김 고장 표시 (IMU -> ATT/HDG, OBD -> SPD)
+    # 데이터 끊김 고장 표시 (IMU -> ATT/HDG, OBD -> SPD/RPM)
     # ---------------------------------------------------------------
     def _draw_attitude_fail(self, painter: QPainter):
         """자세 데이터 없음: ADI 볼을 비우고(지평선/피치/뱅크 포인터 제거) 가운데 ATT."""
@@ -107,6 +111,15 @@ class PFDView(QWidget):
         painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
         painter.drawRect(rect)
         draw_fail_flag(painter, rect.center(), "SPD", self._font_flag)
+
+    def _draw_rpm_fail(self, painter: QPainter):
+        """RPM 데이터 없음: 테이프를 비우고 가운데 RPM."""
+        x, y, w, h = config.RPM_TAPE_RECT
+        rect = QRectF(x, y, w, h)
+        painter.setPen(QPen(QColor(config.COLOR_TAPE_BORDER), 2))
+        painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
+        painter.drawRect(rect)
+        draw_fail_flag(painter, rect.center(), "RPM", self._font_flag)
 
     def _draw_heading_fail(self, painter: QPainter):
         """헤딩 데이터 없음: 나침반 원판만 남기고 눈금/숫자 대신 HDG."""
@@ -336,10 +349,27 @@ class PFDView(QWidget):
             painter.setFont(self._font_selected)
             painter.setPen(QPen(QColor(config.COLOR_SELECTED)))
             painter.drawText(top, Qt.AlignmentFlag.AlignCenter, f"{int(round(scc_set))}")
-        # 아래 띠: 단위 (실기의 마하수 자리)
+        # 아래 띠: 단위 (실기의 마하수 자리). 옵션: 과속 중 빨간 OVERSPEED
         painter.setFont(self._font_tape_unit)
-        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
-        painter.drawText(bottom, Qt.AlignmentFlag.AlignCenter, "KM/H")
+        if self.vm.overspeed and config.SPEED_OVERSPEED_TEXT:
+            painter.setFont(self._font_overspeed)   # 테이프 폭(66px)에 맞춘 작은 글씨
+            painter.setPen(QPen(QColor(config.COLOR_OVERSPEED)))
+            painter.drawText(bottom, Qt.AlignmentFlag.AlignCenter, "OVERSPEED")
+        else:
+            painter.setPen(QPen(QColor(config.COLOR_WHITE)))
+            painter.drawText(bottom, Qt.AlignmentFlag.AlignCenter, "KM/H")
+
+    def _speed_readout_color(self) -> QColor:
+        """현재 속도 박스 색: 평소 흰색, 과속이면 빨강.
+        과속 직후 SPEED_OVERSPEED_FLASH_SEC 동안은 빨강/흰색으로 깜빡임."""
+        elapsed = self.vm.overspeed_elapsed
+        if elapsed is None:
+            return QColor(config.COLOR_WHITE)
+        if elapsed < config.SPEED_OVERSPEED_FLASH_SEC:
+            phase = int(elapsed * config.SPEED_OVERSPEED_FLASH_HZ * 2) % 2
+            if phase == 1:
+                return QColor(config.COLOR_WHITE)
+        return QColor(config.COLOR_OVERSPEED)
 
     def _draw_barber_pole(self, painter: QPainter, body: QRectF, v: float, ppu: float):
         """SPEED_BARBER_POLE_KPH 이상 구간에 빨강/검정 줄무늬 (실기의 최대속도 표시)."""
@@ -398,7 +428,8 @@ class PFDView(QWidget):
             QPointF(br, mid + 6), QPointF(br, mid + 21), QPointF(dl, mid + 21),
             QPointF(dl, mid + 13), QPointF(bl, mid + 13),
         ])
-        painter.setPen(QPen(QColor(config.COLOR_WHITE), 1.5))
+        color = self._speed_readout_color()
+        painter.setPen(QPen(color, 2.0 if self.vm.overspeed else 1.5))
         painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
         painter.drawPolygon(outline)
 
@@ -406,7 +437,7 @@ class PFDView(QWidget):
         frac = v - base
         units = base % 10
         painter.setFont(self._font_readout_small)   # 고도 박스 숫자와 같은 크기
-        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
+        painter.setPen(QPen(color))
 
         def upper(n):
             return str(n // 10) if n >= 10 else ""
@@ -436,26 +467,49 @@ class PFDView(QWidget):
             painter.drawText(QRectF(dl, cy - 10, br - dl, 20), Qt.AlignmentFlag.AlignCenter, str(n % 10))
         painter.restore()
 
-    def _draw_altitude_tape(self, painter: QPainter):
-        value = self.vm.vehicle.altitude_ft
-        ppu = config.ALT_PIXELS_PER_UNIT
-        top, body, bottom = self._tape_layout(config.ALT_TAPE_RECT)
+    def _draw_rpm_tape(self, painter: QPainter):
+        """엔진 RPM 테이프 (예전 고도 테이프 자리, 같은 B737 스타일).
+        눈금 RPM_TICK_STEP, 숫자 RPM_LABEL_STEP, 레드라인 이상은 빨강/검정 줄무늬."""
+        value = max(0.0, self.vm.vehicle.rpm)
+        ppu = config.RPM_PIXELS_PER_UNIT
+        top, body, bottom = self._tape_layout(config.RPM_TAPE_RECT)
 
         painter.fillRect(body, QColor(config.COLOR_TAPE_BG))
         painter.save()
         painter.setClipRect(body)
-        self._draw_tape_scale(painter, body, value, ppu, config.ALT_TICK_STEP,
-                              config.ALT_LABEL_STEP, ticks_left=True)
+        self._draw_rpm_redline(painter, body, value, ppu)
+        self._draw_tape_scale(painter, body, value, ppu, config.RPM_TICK_STEP,
+                              config.RPM_LABEL_STEP, ticks_left=True, min_value=0)
         painter.restore()
-        self._draw_altitude_readout(painter, body, value)
+        self._draw_rpm_readout(painter, body, value)
 
-        painter.fillRect(top, QColor(config.COLOR_BLACK))   # 실기의 선택 고도 자리 (차량은 없음)
+        painter.fillRect(top, QColor(config.COLOR_BLACK))
         painter.setFont(self._font_tape_unit)
         painter.setPen(QPen(QColor(config.COLOR_WHITE)))
-        painter.drawText(bottom, Qt.AlignmentFlag.AlignCenter, "FT")
+        painter.drawText(bottom, Qt.AlignmentFlag.AlignCenter, "RPM")
 
-    def _draw_altitude_readout(self, painter: QPainter, body: QRectF, value: float):
-        """현재 고도 박스: 왼쪽(ADI 쪽) 포인터, 끝 두 자리는 20 단위 드럼(실기와 동일)."""
+    def _draw_rpm_redline(self, painter: QPainter, body: QRectF, value: float, ppu: float):
+        """RPM_REDLINE 이상 구간에 빨강/검정 줄무늬 (눈금 쪽 = 왼쪽 가장자리)."""
+        redline = getattr(config, "RPM_REDLINE", None)
+        if redline is None:
+            return
+        limit_y = body.center().y() - (redline - value) * ppu
+        if limit_y <= body.top():
+            return
+        strip = QRectF(body.left(), body.top(), 8, min(limit_y, body.bottom()) - body.top())
+        painter.fillRect(strip, QColor(config.COLOR_BLACK))
+        painter.save()
+        painter.setClipRect(strip)
+        painter.setPen(QPen(QColor(config.COLOR_BARBER_POLE), 4))
+        yy = strip.top() - 12
+        while yy < strip.bottom() + 12:
+            painter.drawLine(QPointF(strip.left(), yy), QPointF(strip.right(), yy + 8))
+            yy += 12
+        painter.restore()
+
+    def _draw_rpm_readout(self, painter: QPainter, body: QRectF, value: float):
+        """현재 RPM 박스: 왼쪽(ADI 쪽) 포인터, 끝 두 자리는 RPM_DRUM_STEP 단위 드럼.
+        예) 2350 rpm = 앞자리 "23" + 드럼 "50". 레드라인 이상이면 빨강."""
         mid = body.center().y()
         br = body.right() - 2
         bl = br - self.READOUT_BOX_W
@@ -466,21 +520,23 @@ class PFDView(QWidget):
             QPointF(br, mid + 21), QPointF(br, mid - 21), QPointF(dl, mid - 21),
             QPointF(dl, mid - 13), QPointF(bl, mid - 13),
         ])
-        painter.setPen(QPen(QColor(config.COLOR_WHITE), 1.5))
+        redline = getattr(config, "RPM_REDLINE", None)
+        over = redline is not None and value >= redline
+        color = QColor(config.COLOR_OVERSPEED if over else config.COLOR_WHITE)
+        painter.setPen(QPen(color, 2.0 if over else 1.5))
         painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
         painter.drawPolygon(outline)
 
-        step = 20
+        step = config.RPM_DRUM_STEP
         pos = value / step
         base_i = math.floor(pos)
         frac = pos - base_i
         snapped = (base_i + (1 if frac >= 0.5 else 0)) * step
-        hundreds = abs(int(snapped)) // 100
-        sign = "-" if snapped < 0 else ""
-        upper_text = f"{sign}{hundreds}" if hundreds else sign
+        hundreds = int(snapped) // 100
+        upper_text = str(hundreds) if hundreds else ""
 
         painter.setFont(self._font_readout)
-        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
+        painter.setPen(QPen(color))
         painter.drawText(QRectF(bl + 1, mid - 12, dl - bl - 2, 24),
                          Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, upper_text)
 
@@ -491,9 +547,11 @@ class PFDView(QWidget):
         painter.setClipRect(drum)
         for k in (-2, -1, 0, 1, 2):
             n = (base_i + k) * step
+            if n < 0:
+                continue
             cy = mid - (k - frac) * sp
             painter.drawText(QRectF(dl, cy - 10, br - dl, 20), Qt.AlignmentFlag.AlignCenter,
-                             f"{abs(n) % 100:02d}")
+                             f"{n % 100:02d}")
         painter.restore()
 
     def _draw_compass_disk(self, painter: QPainter):

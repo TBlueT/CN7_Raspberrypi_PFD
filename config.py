@@ -21,9 +21,9 @@ BANK_ARC_RADIUS = 140
 PIXELS_PER_DEGREE_PITCH = 8
 
 SPEED_TAPE_RECT = (8, 40, 66, 350)      # ADI 볼 왼쪽에 밀착
-ALT_TAPE_RECT = (324, 40, 66, 350)       # ADI 볼 오른쪽에 밀착
+RPM_TAPE_RECT = (324, 40, 66, 350)       # ADI 볼 오른쪽에 밀착 (예전 고도 테이프 자리)
 SPEED_PIXELS_PER_UNIT = 3
-ALT_PIXELS_PER_UNIT = 0.15
+RPM_PIXELS_PER_UNIT = 0.1                 # 100 rpm = 10px (화면에 약 ±1500 rpm 보임)
 
 # ---- 속도/고도 테이프 (B737 NG 스타일) ----
 # 테이프 영역 = 위 띠(SCC 설정속도) + 본체(눈금) + 아래 띠(단위)
@@ -34,12 +34,23 @@ SPEED_LABEL_STEP = 20          # 숫자 간격 (km/h)
 SPEED_TREND_SEC = 3.0          # 트렌드 화살표 = 이 시간 뒤 예상 속도 (실기 10초, 차는 가속이 빨라 3초)
 SPEED_ACCEL_SMOOTHING_SEC = 0.5   # 가속도 계산 평활 시간
 SPEED_BARBER_POLE_KPH = 110    # 이 속도 이상 빨강/검정 줄무늬 (None 이면 표시 안 함)
-ALT_TICK_STEP = 100
-ALT_LABEL_STEP = 200
+RPM_TICK_STEP = 100            # 눈금 간격 (rpm)
+RPM_LABEL_STEP = 500           # 숫자 간격 (rpm)
+RPM_DRUM_STEP = 50             # 현재값 박스 끝 두 자리 드럼 단위 (00/50)
+RPM_REDLINE = 6500             # 레드라인: 이상이면 빨강/검정 줄무늬 + 박스 빨강 (None 이면 끔)
+RPM_SMOOTHING_ALPHA = 0.3      # 표시 RPM 평활 (1.0 = 평활 없음)
+RPM_STALE_SEC = 3.0            # 이 시간 동안 RPM 이 안 오면 RPM 고장 표시
 COLOR_TAPE_BG = "#4d5257"      # 테이프 회색 배경
 COLOR_SPEED_TREND = "#2fd646"  # 트렌드 화살표 (초록)
 COLOR_SELECTED = "#e05ae0"     # SCC 설정속도 숫자/버그 (마젠타)
 COLOR_BARBER_POLE = "#e02020"
+# 과속 경고: SPEED_BARBER_POLE_KPH 이상이면 현재 속도 박스가 빨강 (보잉 경고 관례대로
+# 처음 SPEED_OVERSPEED_FLASH_SEC 동안 깜빡인 뒤 고정). 한계 - HYST 아래로 내려가야 해제
+SPEED_OVERSPEED_HYST_KPH = 2.0
+SPEED_OVERSPEED_FLASH_SEC = 10.0
+SPEED_OVERSPEED_FLASH_HZ = 2.0
+SPEED_OVERSPEED_TEXT = False     # True 면 테이프 아래 KM/H 자리에 빨간 OVERSPEED 표시 (실기엔 없음)
+COLOR_OVERSPEED = "#ff2a2a"
 
 # 헤딩 나침반 (B737 NG 스타일, 1:1 회전). 반지름을 크게 하고 중심을 화면 아래로
 # 내려서 윗변(y = 중심 - 반지름 = 420)은 그대로 두고 10° 숫자가 겹치지 않게 함
@@ -69,7 +80,7 @@ SONY_QX10_FIXED_ENDPOINT_URL = None
 # `ip link show`/`nmcli device status`로 실제 카메라가 붙은 인터페이스명 확인.
 SONY_QX10_WIFI_INTERFACE = "wlan1"
 CAMERA_HORIZONTAL_FOV_DEG = 75.0     # 쓰시는 웹캠 스펙에 맞춰 조정
-CAMERA_DETECT_MODEL_PATH = "yolo26s.pt"          # 차량/사람 탐지(바운딩박스+클래스)
+CAMERA_DETECT_MODEL_PATH = "yolo26n.pt"          # 차량/사람 탐지(바운딩박스+클래스)
 CAMERA_RECONNECT_INTERVAL_SEC = 2.0
 CAMERA_DEPTH_MAX_RANGE_M = 50.0      # 화면 가장자리(ND_RADIUS)에 대응하는 거리
 ND_RANGE_RING_STEP_M = 10.0          # ND 거리 링 간격 (10, 20, 30 ... m)
@@ -115,6 +126,9 @@ OBD_SERIAL_PORT = "/dev/rfcomm0"
 OBD_BAUDRATE = 38400          # RFCOMM 가상 포트라 실제 물리 baud와는 무관하지만 pyserial API상 필요한 값
 OBD_TIMEOUT_SEC = 0.2
 OBD_RECONNECT_INTERVAL_SEC = 0.1
+OBD_POLL_RPM = True               # 속도(010D) 다음에 엔진 RPM(010C)도 요청
+OBD_RESPONSE_TIMEOUT_SEC = 0.4    # 응답 끝 프롬프트('>')를 기다리는 최대 시간 (이전 고정 대기와 같음)
+OBD_POLL_INTERVAL_SEC = 0.1       # 한 바퀴(속도+RPM) 요청 후 쉬는 시간
 
 # ---- 속도 표시 애니메이션 ----
 # CAN에서 새 속도값이 뜨문뜨문 와도(수백ms 간격), 화면 표시값은 매 프레임
