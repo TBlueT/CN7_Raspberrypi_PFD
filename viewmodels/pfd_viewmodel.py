@@ -85,7 +85,7 @@ class PFDViewModel(QObject):
 
     # ---- services.imu_reader.ImuReaderThread.attitude_updated 에 연결 ----
     def on_attitude_updated(self, roll_deg: float, pitch_deg: float, yaw_deg: float):
-        yaw_deg = yaw_deg % 360.0
+        yaw_deg = (yaw_deg + config.HEADING_OFFSET_DEG) % 360.0   # 헤딩 오프셋 적용
 
         now = time.monotonic()
         self._attitude_time = now

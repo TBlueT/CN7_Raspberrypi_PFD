@@ -215,6 +215,10 @@ PITCH_SMOOTHING_ALPHA = 0.7
 # 여기서 별도로 EMA 스무딩. 0/360도 경계를 최단각도로 계산해서 래핑 처리함.
 YAW_SMOOTHING_ALPHA = 0.5
 
+# 헤딩 오프셋 (도): IMU 요값에 더해서 표시 (IMU 장착 방향/지자기 보정용).
+# PFD 나침반과 ND 헤딩 박스 모두에 적용됨. 0 이면 보정 없음
+HEADING_OFFSET_DEG = 101.0
+
 # ---- 색상 (B737 스타일) ----
 COLOR_SKY = "#1f5fa8"
 COLOR_GROUND = "#6b4423"

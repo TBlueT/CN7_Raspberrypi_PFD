@@ -33,7 +33,7 @@ class NDViewModel(QObject):
 
     # ---- services.imu_reader.ImuReaderThread.attitude_updated 에 연결 (yaw만 사용) ----
     def on_heading_updated(self, yaw_deg: float):
-        self.heading_deg = yaw_deg % 360.0
+        self.heading_deg = (yaw_deg + config.HEADING_OFFSET_DEG) % 360.0   # 헤딩 오프셋 적용
         self._heading_time = time.monotonic()
 
     # ---- services.camera_depth_reader.CameraDepthReaderThread.scan_updated 에 연결 ----
