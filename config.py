@@ -80,7 +80,7 @@ SONY_QX10_FIXED_ENDPOINT_URL = None
 # `ip link show`/`nmcli device status`로 실제 카메라가 붙은 인터페이스명 확인.
 SONY_QX10_WIFI_INTERFACE = "wlan1"
 CAMERA_HORIZONTAL_FOV_DEG = 75.0     # 쓰시는 웹캠 스펙에 맞춰 조정
-CAMERA_DETECT_MODEL_PATH = "yolo26s.pt"          # 차량/사람 탐지(바운딩박스+클래스)
+CAMERA_DETECT_MODEL_PATH = "yolo26n.pt"          # 차량/사람 탐지(바운딩박스+클래스)
 CAMERA_RECONNECT_INTERVAL_SEC = 2.0
 CAMERA_DEPTH_MAX_RANGE_M = 50.0      # 화면 가장자리(ND_RADIUS)에 대응하는 거리
 ND_RANGE_RING_STEP_M = 10.0          # ND 거리 링 간격 (10, 20, 30 ... m)
@@ -210,14 +210,11 @@ AHRS_COMP_DIAGNOSTIC = True
 ROLL_SMOOTHING_ALPHA = 0.7
 PITCH_SMOOTHING_ALPHA = 0.7
 
-# 요(yaw)는 Mahony 필터를 안 거치고 EBIMU 지자기 출력을 그대로 쓰는데,
-# 차량 실내 금속/전자기기로 인한 자기간섭 노이즈가 그대로 나올 수 있어서
-# 여기서 별도로 EMA 스무딩. 0/360도 경계를 최단각도로 계산해서 래핑 처리함.
-YAW_SMOOTHING_ALPHA = 0.5
+# 요(헤딩)는 Mahony 필터를 안 거치고 EBIMU 출력을 필터 없이 그대로 씀 (오프셋만 적용)
 
 # 헤딩 오프셋 (도): IMU 요값에 더해서 표시 (IMU 장착 방향/지자기 보정용).
 # PFD 나침반과 ND 헤딩 박스 모두에 적용됨. 0 이면 보정 없음
-HEADING_OFFSET_DEG = 80.0
+HEADING_OFFSET_DEG = 101.0
 
 # ---- 색상 (B737 스타일) ----
 COLOR_SKY = "#1f5fa8"

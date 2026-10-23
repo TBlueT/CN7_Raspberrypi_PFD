@@ -43,7 +43,6 @@ class PFDViewModel(QObject):
         self._ahrs_last_time = None
         self._smoothed_roll = 0.0
         self._smoothed_pitch = 0.0
-        self._smoothed_yaw = 0.0
 
         # 데이터 유효성: 마지막 수신 시각 (None = 아직 한 번도 못 받음)
         self._attitude_time = None
@@ -107,12 +106,8 @@ class PFDViewModel(QObject):
         self.attitude.roll_deg = self._smoothed_roll
         self.attitude.pitch_deg = self._smoothed_pitch
 
-        # 요(yaw)도 EMA 스무딩. 0<->360도 경계를 최단각도로 계산해서 래핑 처리
-        # (예: 359도->1도는 실제로 2도 변화인데 그냥 평균내면 358도 변화로
-        # 잘못 계산되는 문제 방지)
-        yaw_delta = ((yaw_deg - self._smoothed_yaw + 180) % 360) - 180
-        self._smoothed_yaw = (self._smoothed_yaw + yaw_delta * config.YAW_SMOOTHING_ALPHA) % 360
-        self.attitude.yaw_deg = self._smoothed_yaw
+        # 요(헤딩)는 필터 없이 EBIMU 값 + 오프셋 그대로 사용 (ND 와 동일)
+        self.attitude.yaw_deg = yaw_deg
 
     # ---------------------------------------------------------------
     # 원심력 / 가감속 보정
