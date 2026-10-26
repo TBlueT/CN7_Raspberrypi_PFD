@@ -50,7 +50,6 @@ class PFDView(QWidget):
         self._render_timer.start(int(1000 / config.FRAME_RATE_HZ))
 
         self._font_small = QFont("sans-serif", 10)
-        self._font_medium = QFont("sans-serif", 10)
         self._font_value = QFont("sans-serif", 15, QFont.Weight.Medium)
         self._font_flag_big = QFont("sans-serif", 18, QFont.Weight.Bold)
         self._font_flag = QFont("sans-serif", 14, QFont.Weight.Bold)

@@ -58,59 +58,12 @@ HEADING_ARC_CENTER = (200, 640)
 HEADING_ARC_RADIUS = 220
 HEADING_VISIBLE_HALF_DEG = 55    # 그릴 범위 (화면에는 약 ±45° 보임)
 
-# ---- ND(레이더) 패널 레이아웃 (전방 180도 반원) ----
+# ---- ND(오른쪽 화면) 레이아웃 (전방 180도 반원) ----
 ND_CENTER = (200, 460)        # 반원의 밑변 중심점 (패널 하단 쪽)
 ND_RADIUS = 380
-
-# ---- YDLIDAR G2 ----
-# ---- 카메라 + yolo26n 탐지 + Lite-Mono 깊이 (라이다가 자외선차단필름을 못 뚫어서 교체) ----
-# CAMERA_SOURCE: "usb"(일반 웹캠, CAMERA_INDEX 사용) 또는
-# "sony_qx10"(Wi-Fi로 붙는 소니 렌즈카메라, 아래 SONY_QX10_* 사용)
-CAMERA_SOURCE = "sony_qx10"
-CAMERA_INDEX = 0
-
-# ---- 소니 DSC-QX10 (Wi-Fi 라이브뷰) ----
-# 지금은 SSDP 자동탐색을 우선 시도함. 같은 네트워크에서 탐색이 안 되면,
-# 카메라 IP를 직접 알아내서(QX10 자체 설정 화면 등) 아래에 고정 지정하세요.
-# 형태 예: "http://192.168.122.1:8080/services/camera"
-SONY_QX10_DISCOVERY_TIMEOUT_SEC = 5.0
-SONY_QX10_FIXED_ENDPOINT_URL = None
-# 인터넷용 와이파이(wlan0)와 카메라용 와이파이(wlan1)가 동시에 연결되어
-# 있으면, 탐색 신호가 엉뚱한 인터페이스로 나갈 수 있어서 명시적으로 지정.
-# `ip link show`/`nmcli device status`로 실제 카메라가 붙은 인터페이스명 확인.
-SONY_QX10_WIFI_INTERFACE = "wlan1"
-CAMERA_HORIZONTAL_FOV_DEG = 75.0     # 쓰시는 웹캠 스펙에 맞춰 조정
-CAMERA_DETECT_MODEL_PATH = "yolo26n.pt"          # 차량/사람 탐지(바운딩박스+클래스)
-CAMERA_RECONNECT_INTERVAL_SEC = 2.0
-CAMERA_DEPTH_MAX_RANGE_M = 50.0      # 화면 가장자리(ND_RADIUS)에 대응하는 거리
-ND_RANGE_RING_STEP_M = 10.0          # ND 거리 링 간격 (10, 20, 30 ... m)
-CAMERA_DEPTH_UPDATE_INTERVAL_SEC = 0.1   # RPi4 실측 후 조정 (추론이 느리면 늘리기)
-CAMERA_ANGLE_OFFSET_DEG = 0.0            # 카메라 장착 방향 보정용
-
-# ---- Lite-Mono-tiny 깊이 추정 (상대 깊이 → 기하학 거리로 미터 배율 자동 보정) ----
-
-import os as _os_cam
-_PROJECT_DIR = _os_cam.path.dirname(_os_cam.path.abspath(__file__))
-# 상대경로는 프로젝트 폴더 기준
-LITE_MONO_REPO_DIR = _os_cam.path.join(_PROJECT_DIR, "Lite-Mono")        # git clone 한 저장소 (networks 폴더 포함)
-LITE_MONO_WEIGHTS_DIR = _os_cam.path.join(_PROJECT_DIR, "lite-mono-tiny_640x192")  # encoder.pth, depth.pth
-LITE_MONO_MODEL_NAME = "lite-mono-tiny"
-# "torch": 저장소+pth 로 직접 실행 / "onnx": onnxruntime (없으면 최초 1회 자동 변환)
-# 라즈베리파이에서 둘 다 돌려보고 로그의 추론 ms 가 작은 쪽으로 선택
-LITE_MONO_RUNTIME = "torch"
-LITE_MONO_ONNX_PATH = None          # None 이면 <가중치폴더>/lite-mono-tiny.onnx
-LITE_MONO_NUM_THREADS = 4
-LITE_MONO_CROP = True               # 지평선 주변 640:192 띠만 잘라서 입력 (False: 전체를 찌그러뜨려 입력)
-LITE_MONO_HORIZON_IN_BAND = 0.45    # 잘라낸 띠 안에서 지평선 위치 (KITTI 기준 약 0.45)
-
-# ---- 기하학 거리 (Lite-Mono 배율 보정 기준) ----
-CAMERA_HEIGHT_M = 1.3               # 지면~카메라 렌즈 높이 (실측해서 입력)
-CAMERA_HORIZON_ROW_FRAC = 0.5       # 화면에서 지평선 높이 (0=위, 1=아래). 장착 후 맞추기
-CAMERA_BOTTOM_TRUNCATE_MARGIN_PX = 3
-# Lite-Mono 배율: None 이면 기하학 거리로 자동 보정(EMA). 값을 넣으면 고정 배율 사용
-LITE_MONO_FIXED_SCALE = None
-LITE_MONO_SCALE_EMA_ALPHA = 0.1
-CAMERA_TIMING_LOG_INTERVAL_SEC = 10.0   # 추론 시간 로그 주기 (0 이면 끔)
+ND_MAX_RANGE = 50.0           # 반원 가장자리(ND_RADIUS)에 대응하는 거리
+ND_RANGE_RING_STEP = 10.0     # 거리 링 간격
+ND_RANGE_UNIT = "m"           # 링 라벨 단위 (ADS-B 등 추가 시 NM 등으로 변경)
 
 
 # ---- EBIMU-9DOFV5-R3 시리얼 설정 ----
@@ -120,11 +73,7 @@ IMU_BAUDRATE = 115200        # EBIMU 기본값. 장비에서 변경했다면 맞
 IMU_TIMEOUT_SEC = 0.1
 IMU_RECONNECT_INTERVAL_SEC = 1.0   # 부팅 직후 USB 인식 전일 수 있으므로 연결 실패 시 재시도 간격
 
-# ---- 인포카 OBD 어댑터 (클래식 블루투스 SPP, /dev/rfcomm0) ----
-# 사전에 bluetoothctl로 페어링 + `sudo rfcomm bind /dev/rfcomm0 <MAC>` 필요
-OBD_SERIAL_PORT = "/dev/rfcomm0"
-OBD_BAUDRATE = 38400          # RFCOMM 가상 포트라 실제 물리 baud와는 무관하지만 pyserial API상 필요한 값
-OBD_TIMEOUT_SEC = 0.2
+# ---- 인포카 OBD 어댑터 (BLE) 폴링 ----
 OBD_RECONNECT_INTERVAL_SEC = 0.1
 OBD_POLL_RPM = True               # 속도(010D) 다음에 엔진 RPM(010C)도 요청
 OBD_RESPONSE_TIMEOUT_SEC = 0.4    # 응답 끝 프롬프트('>')를 기다리는 최대 시간 (이전 고정 대기와 같음)
@@ -142,8 +91,6 @@ OBD_BLE_ADDRESS = "66:1E:11:14:04:63"     # Infocar-OH-03, 재스캔 시 바뀔 
 OBD_BLE_TX_CHAR_UUID = "0000fff2-0000-1000-8000-00805f9b34fb"   # AT 명령 보내는 채널
 OBD_BLE_RX_CHAR_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"   # 응답/모니터 데이터 받는 채널
 
-import os as _os
-OBD_DBC_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "hyundai_can_clean.dbc")
 
 
 # EBIMU ASCII 출력 포맷: "*Roll,Pitch,Yaw\r\n"
@@ -226,8 +173,6 @@ COLOR_TAPE_BORDER = "#4a4a4a"
 COLOR_TAPE_TICK = "#666666"
 COLOR_MODE_TEXT = "#2fd646"          # 초록 (활성 상태)
 COLOR_MODE_TEXT_OFF = "#555555"      # 회색 (비활성 상태)
-COLOR_WARN_TEXT = "#f0997b"
-COLOR_ND_INFO = "#00c8c8"           # ND 진행 상태 문구 (모델 준비 중)
 COLOR_FAIL_FLAG = "#f0a020"         # 데이터 끊김 고장 표시 (ATT/HDG/SPD, 보잉 계기 관례 주황)
 
 # ---- 데이터 유효성 (이 시간 동안 새 값이 없으면 고장 표시) ----

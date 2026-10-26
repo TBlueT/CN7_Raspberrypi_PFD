@@ -1,18 +1,14 @@
 """
 NDView (MVVM의 View)
 
-이전 NDWidget과 렌더링 로직은 동일하지만, 상태를 직접 들고 있지 않고
-viewmodels.nd_viewmodel.NDViewModel만 읽어서 그립니다.
+B737 ND(항법 화면) 스타일의 오른쪽 패널. 지금은 거리 링과 헤딩만 그립니다.
+(카메라 레이더 기능은 삭제됨 — 나중에 ADS-B 항공기 표시 등을 여기에 추가)
 
-라이다가 차량 자외선차단 필름을 통과 못해 카메라(yolo26n 탐지 + Lite-Mono 깊이)로 교체.
-점 구름 대신 실제 B737 TCAS(공중충돌방지) 화면처럼 물체 하나당 마름모
-하나 + 거리 숫자로 표시합니다. 카메라 시야각(config.CAMERA_HORIZONTAL_FOV_DEG)
-이 라이다 때(180도)보다 훨씬 좁아서, 그 범위 밖은 점선으로 "커버리지 경계"를
-표시합니다.
+정적 배경(반원, 거리 링, 헤딩 박스 테두리)은 한 번만 그려서 QPixmap 으로 캐싱하고,
+매 프레임은 헤딩 숫자만 새로 그립니다.
 """
 
 import math
-import time
 
 from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPolygonF, QFont, QPainterPath, QPixmap
@@ -37,92 +33,17 @@ class NDView(QWidget):
 
         self._font_small = QFont("sans-serif", 8)
         self._font_value = QFont("sans-serif", 12, QFont.Weight.Medium)
-        self._font_flag = QFont("sans-serif", 18, QFont.Weight.Bold)
-        self._font_status = QFont("sans-serif", 8, QFont.Weight.Bold)
 
-        # 절대 안 바뀌는 배경(반원, 거리 링, 라벨, 시야각 점선, 헤딩박스
-        # 테두리+고정 라벨)은 한 번만 그려서 캐싱해두고, 매 프레임은 이걸
-        # 그대로 붙여넣기만 함 (도형/삼각함수 재계산 없음)
+        # 절대 안 바뀌는 배경(반원, 거리 링, 라벨, 헤딩박스 테두리+고정 라벨)은
+        # 한 번만 그려서 캐싱해두고, 매 프레임은 이걸 그대로 붙여넣기만 함
         self._background_pixmap = self._render_background()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-
         painter.drawPixmap(0, 0, self._background_pixmap)
-
         self._draw_heading_value(painter)
-        if self.vm.model_state != "ready":
-            # 추론 모델 다운로드/변환/로드 중이거나 실패 - 카메라 상태보다 우선 표시
-            self._draw_model_status(painter)
-        elif self.vm.connection_status == "connected":
-            self._draw_objects(painter)
-            self._draw_top_label(painter)
-        else:
-            # 실제 항공기 레이더/EFIS 관례: 신호 없음/고장 시 화면 구석 작은
-            # 글씨가 아니라 화면 중앙에 큼직하게 표시해서 놓칠 수 없게 함
-            self._draw_center_failure_flag(painter)
-
         painter.end()
-
-    def _draw_center_failure_flag(self, painter: QPainter):
-        cx, cy = config.ND_CENTER
-        r = config.ND_RADIUS
-        # 반원 안쪽(하늘 부분)의 세로 중앙 정도에 배치
-        center_y = cy - r * 0.55
-
-        text = "카메라 연결 안됨" if self.vm.connection_status == "disconnected" else "안됨"
-
-        painter.setFont(self._font_flag)
-        painter.setPen(QPen(QColor(config.COLOR_WARN_TEXT)))
-        painter.drawText(QRectF(cx - 150, center_y - 20, 300, 40),
-                          Qt.AlignmentFlag.AlignCenter, text)
-
-    def _draw_model_status(self, painter: QPainter):
-        """B737 ND 스타일: 가운데에 상자 없이 상태 문구, 왼쪽 아래(레이더 모드
-        표시 자리)에 모델별 진행 단계를 작은 글씨로. 진행 중 단계엔 경과 시간."""
-        failed = self.vm.model_state == "failed"
-        color = QColor(config.COLOR_WARN_TEXT if failed else config.COLOR_ND_INFO)
-
-        cx, cy = config.ND_CENTER
-        r = config.ND_RADIUS
-        center_y = cy - r * 0.55
-        painter.setFont(self._font_flag)
-        painter.setPen(QPen(color))
-        painter.drawText(QRectF(cx - 150, center_y - 20, 300, 40),
-                          Qt.AlignmentFlag.AlignCenter,
-                          "모델 실패" if failed else "모델 준비 중")
-
-        elapsed = time.monotonic() - self.vm.model_status_time
-        lines = self.vm.model_lines
-        painter.setFont(self._font_status)
-        painter.setPen(QPen(color))
-        line_h = 16
-        top = config.PANEL_HEIGHT - 12 - line_h * len(lines)
-        for i, line in enumerate(lines):
-            text = line.get("text", "")
-            timer = line.get("timer")
-            if timer == "up":
-                text += f"  {self._mmss(elapsed)}"
-            elif timer == "down":
-                text += f"  {self._mmss(max(0.0, line.get('seconds', 0.0) - elapsed))}"
-            painter.drawText(QRectF(8, top + i * line_h, config.PANEL_WIDTH - 16, line_h),
-                              Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
-
-    @staticmethod
-    def _mmss(seconds: float) -> str:
-        s = int(seconds)
-        return f"{s // 60:02d}:{s % 60:02d}"
-
-    def _draw_top_label(self, painter: QPainter):
-        count = len(self.vm.scan.points)
-        rect = QRectF(8, 8, config.PANEL_WIDTH - 16, 18)
-        painter.setPen(QPen(QColor(config.COLOR_TAPE_BORDER), 1))
-        painter.setBrush(QBrush(QColor(config.COLOR_BLACK)))
-        painter.drawRect(rect)
-        painter.setFont(self._font_small)
-        painter.setPen(QPen(QColor("#9fe1cb")))
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"CAMERA DEPTH ({count} obj)")
 
     def _render_background(self) -> QPixmap:
         """정적 배경 요소를 전부 그려서 QPixmap으로 반환. __init__에서 한 번만 호출됨."""
@@ -132,7 +53,6 @@ class NDView(QWidget):
         painter.fillRect(pixmap.rect(), QColor(config.COLOR_BLACK))
 
         self._draw_range_rings(painter)
-        self._draw_fov_boundary(painter)
         self._draw_heading_box_static(painter)
 
         painter.end()
@@ -154,9 +74,9 @@ class NDView(QWidget):
         painter.setPen(QPen(QColor(config.COLOR_ND_RING), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
-        max_range = config.CAMERA_DEPTH_MAX_RANGE_M
+        max_range = config.ND_MAX_RANGE
         painter.setFont(self._font_small)
-        step = config.ND_RANGE_RING_STEP_M
+        step = config.ND_RANGE_RING_STEP
         ring_count = max(1, int(round(max_range / step)))
         for i in range(1, ring_count + 1):
             frac = min(1.0, i * step / max_range)
@@ -168,10 +88,10 @@ class NDView(QWidget):
             theta = math.radians(90)
             label_x = cx + ring_r * math.cos(theta)
             label_y = cy - ring_r * math.sin(theta)
-            distance_m = max_range * frac
+            distance = max_range * frac
             painter.setPen(QPen(QColor(config.COLOR_TAPE_TICK)))
-            painter.drawText(QRectF(label_x - 16, label_y - 8, 32, 16),
-                              Qt.AlignmentFlag.AlignCenter, f"{distance_m:.0f}m")
+            painter.drawText(QRectF(label_x - 20, label_y - 8, 40, 16),
+                              Qt.AlignmentFlag.AlignCenter, f"{distance:.0f}{config.ND_RANGE_UNIT}")
 
         painter.setPen(QPen(QColor(config.COLOR_ND_RING), 1))
         painter.drawLine(QPointF(cx - r, cy), QPointF(cx - r, cy - 4))
@@ -219,60 +139,3 @@ class NDView(QWidget):
         painter.setFont(self._font_value)
         painter.setPen(QPen(QColor(config.COLOR_WHITE)))
         painter.drawText(box_rect, Qt.AlignmentFlag.AlignCenter, f"{int(round(heading)):03d}")
-
-    def _draw_fov_boundary(self, painter: QPainter):
-        """카메라 시야각이 ND 반원(180도) 전체보다 좁으므로, 실제로 감지 가능한
-        범위의 경계를 점선으로 표시해서 그 밖은 "커버리지 밖"임을 알려준다."""
-        cx, cy = config.ND_CENTER
-        r = config.ND_RADIUS
-        half_fov = config.CAMERA_HORIZONTAL_FOV_DEG / 2
-
-        pen = QPen(QColor(config.COLOR_TAPE_TICK), 1, Qt.PenStyle.DashLine)
-        painter.setPen(pen)
-        for sign in (-1, 1):
-            theta = math.radians(90 - sign * half_fov)
-            x = cx + r * math.cos(theta)
-            y = cy - r * math.sin(theta)
-            painter.drawLine(QPointF(cx, cy), QPointF(x, y))
-
-    def _draw_objects(self, painter: QPainter):
-        """TCAS 스타일: 물체 하나당 마름모 하나 + 거리 숫자.
-        정면 -90도~+90도 범위만 표시. 각도 0도 = 차량 정면(화면 위쪽) 가정."""
-        cx, cy = config.ND_CENTER
-        r = config.ND_RADIUS
-        max_range = config.CAMERA_DEPTH_MAX_RANGE_M
-
-        painter.setFont(self._font_small)
-        for angle_deg, distance_m in self.vm.scan.points:
-            normalized = ((angle_deg + 180) % 360) - 180
-            if not (-90 <= normalized <= 90):
-                continue
-            if distance_m <= 0 or distance_m > max_range:
-                continue
-
-            theta = math.radians(90 - normalized)
-            radius_px = (distance_m / max_range) * r
-            x = cx - radius_px * math.cos(theta)  # 좌우 반전 (화면 기준)
-            y = cy - radius_px * math.sin(theta)
-
-            self._draw_diamond(painter, x, y, distance_m)
-
-        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
-        painter.setBrush(QBrush(QColor(config.COLOR_WHITE)))
-        painter.drawEllipse(QPointF(cx, cy), 3, 3)
-
-    def _draw_diamond(self, painter: QPainter, x: float, y: float, distance_m: float):
-        size = 7
-        diamond = QPolygonF([
-            QPointF(x, y - size),
-            QPointF(x + size, y),
-            QPointF(x, y + size),
-            QPointF(x - size, y),
-        ])
-        painter.setPen(QPen(QColor(config.COLOR_WHITE), 1.5))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPolygon(diamond)
-
-        painter.setPen(QPen(QColor(config.COLOR_WHITE)))
-        painter.drawText(QRectF(x - 20, y + size + 2, 40, 14),
-                          Qt.AlignmentFlag.AlignCenter, f"{distance_m:.0f}m")
