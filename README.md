@@ -37,10 +37,8 @@
 
 ```
 services/     하드웨어에서 원시 데이터를 읽는 스레드 (Model 공급원)
-  imu_reader.py           EBIMU ASCII 프로토콜 파싱. 기본 Roll/Pitch/Yaw 외에
-                          raw 자이로(sog1)/raw 가속도(soa1)도 파싱해 발행
-  ahrs_filter.py          Mahony AHRS 상보필터 - raw 자이로+가속도로 롤/피치를
-                          직접 추정 (원심력/가감속 영향을 자연스럽게 완화)
+  imu_reader.py           EBIMU ASCII 프로토콜 파싱 (Roll/Pitch/Yaw, 추가 필드
+                          자이로/가속도는 파싱만)
   can_reader.py           인포카 BLE로 OBD 표준 PID 조회 (속도 010D, RPM 010C;
                           SCC/LFA/HDA는 이 어댑터 한계로 현재 불가, 아래 참고)
 
@@ -49,8 +47,7 @@ models/       순수 데이터 구조 (dataclass)
   vehicle_model.py    속도·RPM(실측치/표시치), 가속도, SCC/LFA/HDA 상태
 
 viewmodels/   services의 데이터를 받아 저장만 함 (신호 없이 폴링 대상)
-  pfd_viewmodel.py   Mahony 필터(원심력/가감속 보정)로 롤/피치 계산, 속도/RPM 평활,
-                     데이터 유효성, 과속 판정
+  pfd_viewmodel.py   IMU 자세값 보관(필터 없음), 속도/RPM 평활, 데이터 유효성, 과속 판정
   nd_viewmodel.py    헤딩 보관
 
 views/        순수 렌더링 (QWidget). 값 계산 없이 ViewModel을 고정 프레임레이트로
@@ -70,24 +67,11 @@ launcher.py   부팅 시 인터넷 연결되면 GitHub에서 최신 코드로 �
 센서가 아무리 빨리 갱신돼도 화면 갱신 속도는 이 값으로 제한됩니다 (200회
 연속 데이터 갱신 → 실제 repaint 14회로 검증됨).
 
-## 자세각(롤/피치) 계산 방식
+## 자세각(롤/피치/요)
 
-EBIMU가 자체 계산해서 주는 Roll/Pitch를 그대로 쓰지 않고, `services/ahrs_filter.py`의
-**Mahony AHRS 상보필터**로 raw 자이로(`sog1`)+raw 가속도(`soa1`, 중력 포함)를 직접
-받아 롤/피치를 계산합니다. 요(yaw)는 EBIMU 자체 출력(지자기 보정 포함)을 그대로 씀.
-
-선회 중 원심력, 가감속 중 관성력이 가속도계에 섞이면 평지인데도 롤/피치가 틀어집니다.
-Mahony 필터만으로는 회전이 몇 초 이상 이어질 때 서서히 기울어지므로(시속 40km·15°/s
-좌회전 8초 시뮬레이션에서 롤 11°), 필터에 넣기 전에 **OBD 속도로 운동 가속도를 뺍니다**
-(항공 AHRS 의 속도 보정과 같은 원리):
-
-- 좌우: 원심 가속도 = 속도 × 요레이트 → 같은 시뮬레이션에서 롤 오차 0.6°
-- 앞뒤: OBD 속도 변화율 → 0.6g 급제동 피치 오차 20.8° → 약 7° (OBD 0.7초 간격 한계)
-- OBD 속도가 끊기면 보정 없이 필터만 동작
-
-**차에서 처음 확인할 것**: 회전할 때 `[AHRS] 원심력 점검: 실측/계산 = …` 로그가 나옵니다.
-+1 근처면 정상, -1 근처면 `IMU_LATERAL_SIGN` 반대, 0 근처면 `IMU_LATERAL_AXIS` 확인,
-약 9.8/0.1 이면 `ACCEL_UNIT_IS_G` 확인. 설정이 맞으면 `AHRS_COMP_DIAGNOSTIC = False` 로 끄면 됨.
+EBIMU 가 출력하는 Roll/Pitch/Yaw 를 **필터·보정 없이 그대로** 표시합니다
+(헤딩만 `HEADING_OFFSET_DEG` 적용). 예전 Mahony 필터 + OBD 속도 보정은 가감속 시
+각도가 틀어지는 문제가 있어 삭제했고, 생데이터 확인 후 다시 설계할 예정입니다.
 
 ## 속도/RPM 테이프 (B737 NG 스타일)
 
@@ -96,7 +80,13 @@ Mahony 필터만으로는 회전이 몇 초 이상 이어질 때 서서히 기�
 - 현재값 박스: 검정 바탕 + 흰 테두리 + ADI 쪽 포인터. 속도는 일의 자리,
   RPM 은 끝 두 자리(50 단위)가 드럼처럼 굴러감. `RPM_REDLINE`(6500) 이상이면
   빨강/검정 줄무늬 + 박스 빨강, RPM 이 3초 이상 안 오면 `RPM` 고장 표시
-- 초록 트렌드 화살표 = `SPEED_TREND_SEC`(3초) 뒤 예상 속도
+- 속도 표시는 가속도 예측 보간: OBD 새 값이 오면 다음 값이 올 시간(수신 간격 평균) 동안
+  "새 값 + 가속도 x 간격 x `SPEED_PREDICT_GAIN`(0.8)" 까지 일정한 속도로 이동 → 가속 중에도
+  지연이 적고 부드러움. 강한 감속이 끝날 때 1~3 km/h 정도 지나쳤다 돌아올 수 있음
+  (`SPEED_PREDICT_GAIN = 0` 이면 지연은 있지만 지나침 없는 단순 보간).
+  처음/재연결 직후 첫 값은 예측 없이 그 값까지만 이동하고, 수신이 1초 넘게 끊기면
+  마지막 OBD 값으로 천천히 복귀
+- 초록 트렌드 화살표 = `SPEED_TREND_SEC`(3초) 뒤 예상 속도 (OBD 속도 변화율로 계산)
 - SCC 설정속도: 테이프 위 마젠타 숫자 + 마젠타 버그 (SCC 데이터 수신 시)
 - 과속 바버폴: `SPEED_BARBER_POLE_KPH`(110) 이상 빨강/검정 줄무늬, `None`이면 끔
 - 헤딩: 나침반 원판이 헤딩만큼 1:1 회전, 위쪽 고정 포인터 + 현재 헤딩 박스.
@@ -128,8 +118,7 @@ pip install pyserial bleak --break-system-packages   # PyQt6 는 기존 설치 �
 
 - `IMU_SERIAL_PORT` — EBIMU가 잡히는 실제 포트 (`ls /dev/serial/by-id/`)
 - `IMU_INIT_COMMANDS` — `<soa1>`(가속도), `<sog1>`(자이로) 등 부팅시 자동 전송 명령
-- `IMU_EXTRA_FIELD_ORDER`, `GYRO_SIGN`, `ACCEL_SIGN` — 실기 응답에 맞게 조정 필요
-- `MAHONY_KP` / `MAHONY_KI` — 필터 반응성 튜닝 (기본 0.3 / 0.0)
+- `IMU_EXTRA_FIELD_ORDER` — 실기 응답 필드 순서에 맞게 조정
 - `OBD_BLE_ADDRESS` — 인포카 어댑터 MAC 주소 (`ble_scan.py`로 재확인 가능)
 - `HEADING_OFFSET_DEG` — 헤딩 오프셋 (IMU 장착 방향/지자기 보정)
 - `RPM_REDLINE`, `SPEED_BARBER_POLE_KPH` — 레드라인 / 과속 경고 기준

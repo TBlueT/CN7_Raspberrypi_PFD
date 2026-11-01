@@ -33,15 +33,17 @@ class PFDViewModel(QObject):
         self._attitude_time = None
         self._speed_time = None
         self._speed_anim_last = None   # 애니메이션 틱 시각
-        # 속도 보간: 새 OBD 값까지 일정 속도로 이동
+        # 속도 예측 보간: 다음 OBD 값 예상치까지 일정 속도로 이동
         self._speed_rate = 0.0         # 표시 바늘 이동 속도 (km/h/s)
+        self._speed_move_end = 0.0     # 이 시각이 지나도 새 값이 없으면 바늘 정지
+        self._speed_stop_at = None     # 처음/재연결 직후: 이 값에 도착하면 정지 (큰 점프 지나침 방지)
         self._obd_interval = config.SPEED_INTERP_INIT_SEC   # OBD 속도 수신 간격 평균
         self._prev_obd_speed = None    # (시각, km/h) - 가속도 계산용
         self._overspeed_since = None   # 과속 시작 시각 (None = 과속 아님)
         self._rpm_time = None          # 마지막 RPM 수신 시각
 
         # 속도 표시 애니메이션용 타이머 - OBD 값 도착 빈도와 무관하게 고정 주기로
-        # 표시값을 목표치 쪽으로 일정 속도(보간)로 움직임
+        # 표시값을 예측 목표치 쪽으로 일정 속도로 움직임
         self._speed_anim_timer = QTimer(self)
         self._speed_anim_timer.timeout.connect(self._on_speed_animation_tick)
         self._speed_anim_timer.start(int(1000 / config.FRAME_RATE_HZ))
@@ -60,24 +62,37 @@ class PFDViewModel(QObject):
 
     # ---- services.can_reader.CanMonitorThread 각 시그널에 연결 ----
     def on_speed_updated(self, value: float):
-        """OBD 새 속도 수신: 다음 값이 올 예상 시간 동안 현재 표시값에서 새 값까지
-        일정 속도로 가도록 바늘 이동 속도를 정함 (실제 이동은 애니메이션 타이머가 처리).
-        트렌드 화살표용 가속도는 OBD 값 변화율로 계산."""
+        """OBD 새 속도 수신 (가속도 예측 보간):
+        1) OBD 값 변화율로 가속도 갱신 - 커지는 쪽은 평활, 줄어드는 쪽은 즉시 반영,
+           방향이 바뀌면 0 으로
+        2) 다음 값이 올 예상 시간 동안 '새 값 + 가속도 x 간격 x 게인' 까지 일정 속도로
+           가도록 바늘 이동 속도를 정함 (실제 이동은 애니메이션 타이머가 처리)
+        가속도는 트렌드 화살표에도 그대로 씀."""
         now = time.monotonic()
+        accel = self.vehicle.speed_accel_kph_s
         if self._prev_obd_speed is not None and self.speed_valid:
             t_prev, v_prev = self._prev_obd_speed
             dt = now - t_prev
             if dt > 0.05:
                 self._obd_interval += 0.3 * (dt - self._obd_interval)
-                k = dt / (config.SPEED_ACCEL_SMOOTHING_SEC + dt)
-                accel = (value - v_prev) / dt
-                self.vehicle.speed_accel_kph_s += k * (accel - self.vehicle.speed_accel_kph_s)
+                measured = (value - v_prev) / dt
+                if measured * accel < 0:            # 방향 바뀜 -> 0 부터 다시 (정속 흔들림 억제)
+                    accel = 0.0
+                elif abs(measured) < abs(accel):    # 가속이 줄어듦 -> 즉시 반영 (지나침 억제)
+                    accel = measured
+                else:                               # 가속이 커짐 -> 평활
+                    accel += dt / (config.SPEED_ACCEL_SMOOTHING_SEC + dt) * (measured - accel)
+            self._speed_stop_at = None
         else:
-            self.vehicle.speed_accel_kph_s = 0.0   # 처음 / 끊겼다 다시 들어옴
+            accel = 0.0   # 처음 / 끊겼다 다시 들어옴 -> 예측 없이 새 값까지만 이동
+            self._speed_stop_at = value
+        self.vehicle.speed_accel_kph_s = accel
         self._prev_obd_speed = (now, value)
 
         duration = max(config.SPEED_INTERP_MIN_SEC, self._obd_interval)
-        self._speed_rate = (value - self.vehicle.speed_kph) / duration
+        predicted = max(0.0, value + config.SPEED_PREDICT_GAIN * accel * duration)
+        self._speed_rate = (predicted - self.vehicle.speed_kph) / duration
+        self._speed_move_end = now + config.SPEED_INTERP_HOLD_FACTOR * duration
         self.vehicle.speed_kph_target = value
         self._speed_time = now
 
@@ -86,13 +101,18 @@ class PFDViewModel(QObject):
         dt = (now - self._speed_anim_last) if self._speed_anim_last is not None else 0.0
         self._speed_anim_last = now
 
-        # 보간: 일정 속도로 목표치까지 이동, 도착하면 멈춤 (지나치지 않음)
-        current = self.vehicle.speed_kph
-        target = self.vehicle.speed_kph_target
-        new = current + self._speed_rate * dt
-        if (self._speed_rate >= 0 and new >= target) or (self._speed_rate < 0 and new <= target):
-            new = target
-        self.vehicle.speed_kph = new
+        # 예측 보간: 일정 속도로 이동, 다음 값이 너무 늦으면 정지. 0 아래로는 안 감
+        if now > self._speed_move_end:
+            self._speed_rate = 0.0
+        new = self.vehicle.speed_kph + self._speed_rate * dt
+        # 새 값이 SPEED_SETTLE_AFTER_SEC 넘게 안 오면 마지막 OBD 값으로 천천히 복귀
+        # (예측으로 지나친 채 멈춰 있지 않도록. 정상 수신 중에는 동작 안 함)
+        if self._speed_time is not None and now - self._speed_time > config.SPEED_SETTLE_AFTER_SEC:
+            new += dt / (0.3 + dt) * (self.vehicle.speed_kph_target - new)
+        stop = self._speed_stop_at
+        if stop is not None and (new - stop) * self._speed_rate >= 0:
+            new, self._speed_rate = stop, 0.0
+        self.vehicle.speed_kph = max(0.0, new)
 
         self._update_overspeed(now)
 

@@ -32,7 +32,7 @@ TAPE_BOTTOM_STRIP_PX = 18
 SPEED_TICK_STEP = 10           # 눈금 간격 (km/h)
 SPEED_LABEL_STEP = 20          # 숫자 간격 (km/h)
 SPEED_TREND_SEC = 3.0          # 트렌드 화살표 = 이 시간 뒤 예상 속도 (실기 10초, 차는 가속이 빨라 3초)
-SPEED_ACCEL_SMOOTHING_SEC = 0.5   # OBD 속도 변화율(가속도) 평활 시간 - 트렌드 화살표용
+SPEED_ACCEL_SMOOTHING_SEC = 0.4   # OBD 속도 변화율(가속도) 평활 시간 - 예측 보간 + 트렌드 화살표
 SPEED_BARBER_POLE_KPH = 110    # 이 속도 이상 빨강/검정 줄무늬 (None 이면 표시 안 함)
 RPM_TICK_STEP = 100            # 눈금 간격 (rpm)
 RPM_LABEL_STEP = 500           # 숫자 간격 (rpm)
@@ -79,10 +79,14 @@ OBD_POLL_RPM = True               # 속도(010D) 다음에 엔진 RPM(010C)도 �
 OBD_RESPONSE_TIMEOUT_SEC = 0.4    # 응답 끝 프롬프트('>')를 기다리는 최대 시간 (이전 고정 대기와 같음)
 OBD_POLL_INTERVAL_SEC = 0.1       # 한 바퀴(속도+RPM) 요청 후 쉬는 시간
 
-# ---- 속도 표시 애니메이션 (보간) ----
+# ---- 속도 표시 애니메이션 (가속도 예측 보간) ----
 # OBD 새 값이 오면, 다음 값이 올 것으로 예상되는 시간(최근 수신 간격 평균) 동안
-# 현재 표시값에서 새 값까지 일정한 속도로 직선 이동. 새 값에 도착하면 멈추고
-# 다음 값을 기다림 (지나침 없음, 대신 표시가 수신 간격만큼 늦음)
+# "새 값 + 가속도 x 간격 x 게인" 을 향해 일정한 속도로 이동 (가속 중 지연 보상).
+# 가속이 줄어드는 쪽은 가속도를 즉시 반영, 방향이 바뀌면 0 으로 (감속 끝 지나침/정속 흔들림 억제).
+# 다음 값이 HOLD_FACTOR x 간격 안에 안 오면 바늘을 멈춤.
+SPEED_PREDICT_GAIN = 0.8          # 0 = 보간만(지연 있음), 1.0 = 가속도 전부 반영 (지나침 커짐)
+SPEED_INTERP_HOLD_FACTOR = 1.5
+SPEED_SETTLE_AFTER_SEC = 1.0      # 새 값이 이 시간 넘게 안 오면 마지막 OBD 값으로 천천히 복귀
 SPEED_INTERP_MIN_SEC = 0.3        # 한 구간 최소 이동 시간 (수신 간격이 이보다 짧아도 이 시간 사용)
 SPEED_INTERP_INIT_SEC = 0.4       # 수신 간격 평균 초기값
 
