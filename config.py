@@ -32,7 +32,7 @@ TAPE_BOTTOM_STRIP_PX = 18
 SPEED_TICK_STEP = 10           # 눈금 간격 (km/h)
 SPEED_LABEL_STEP = 20          # 숫자 간격 (km/h)
 SPEED_TREND_SEC = 3.0          # 트렌드 화살표 = 이 시간 뒤 예상 속도 (실기 10초, 차는 가속이 빨라 3초)
-SPEED_ACCEL_SMOOTHING_SEC = 0.5   # 가속도 계산 평활 시간
+SPEED_ACCEL_SMOOTHING_SEC = 0.5   # OBD 속도 변화율(가속도) 평활 시간 - 트렌드 화살표용
 SPEED_BARBER_POLE_KPH = 110    # 이 속도 이상 빨강/검정 줄무늬 (None 이면 표시 안 함)
 RPM_TICK_STEP = 100            # 눈금 간격 (rpm)
 RPM_LABEL_STEP = 500           # 숫자 간격 (rpm)
@@ -79,12 +79,12 @@ OBD_POLL_RPM = True               # 속도(010D) 다음에 엔진 RPM(010C)도 �
 OBD_RESPONSE_TIMEOUT_SEC = 0.4    # 응답 끝 프롬프트('>')를 기다리는 최대 시간 (이전 고정 대기와 같음)
 OBD_POLL_INTERVAL_SEC = 0.1       # 한 바퀴(속도+RPM) 요청 후 쉬는 시간
 
-# ---- 속도 표시 애니메이션 ----
-# CAN에서 새 속도값이 뜨문뜨문 와도(수백ms 간격), 화면 표시값은 매 프레임
-# 이 속도(초당 km/h)로만 목표치를 향해 부드럽게 움직임
-# 속도 표시를 EMA(지수감쇠) 방식으로 부드럽게 (롤/피치와 같은 방식 -
-# 목표치에 가까워질수록 자연스럽게 감속하며 수렴, 등속+급정지 없음)
-SPEED_SMOOTHING_ALPHA = 0.08
+# ---- 속도 표시 애니메이션 (보간) ----
+# OBD 새 값이 오면, 다음 값이 올 것으로 예상되는 시간(최근 수신 간격 평균) 동안
+# 현재 표시값에서 새 값까지 일정한 속도로 직선 이동. 새 값에 도착하면 멈추고
+# 다음 값을 기다림 (지나침 없음, 대신 표시가 수신 간격만큼 늦음)
+SPEED_INTERP_MIN_SEC = 0.3        # 한 구간 최소 이동 시간 (수신 간격이 이보다 짧아도 이 시간 사용)
+SPEED_INTERP_INIT_SEC = 0.4       # 수신 간격 평균 초기값
 
 # ---- 인포카 BLE 연결 정보 (ble_scan.py로 확인됨) ----
 OBD_BLE_ADDRESS = "66:1E:11:14:04:63"     # Infocar-OH-03, 재스캔 시 바뀔 수 있으니 안 붙으면 ble_scan.py 재실행
@@ -102,18 +102,9 @@ IMU_LINE_PREFIX = "*"
 # 자이로/가속도 필드가 전혀 없으면 빈 리스트로 두면 됨(자세각만 파싱).
 IMU_EXTRA_FIELD_ORDER = ["gyro", "accel"]
 
-# 자이로 원시값 단위가 deg/s인지 (아니면 이미 rad/s라고 가정하고 안 바꿈)
-GYRO_UNIT_IS_DEG_PER_SEC = True
-
-# 자이로/가속도 각 축 부호가 실제 장착 방향과 안 맞으면 조정 (-1.0으로 반전)
-GYRO_SIGN = (1.0, 1.0, 1.0)   # (gx, gy, gz)
-ACCEL_SIGN = (1.0, 1.0, 1.0)  # (ax, ay, az)
-
 # ---- EBIMU 부팅/재연결 시 자동으로 보낼 초기화 명령 ----
-# "<sog1>": 자이로(각속도) 원시값 추가 출력. "<soa1>": 가속도 원시값(중력
-# 포함, Mahony 필터가 중력방향을 알아야 하므로 중력이 포함된 원본이 필요함
-# - soa2의 "중력 제거"판이 아님). 공식 명령어 표로 soa0~soa5, sog1 확인됨.
-# 100% 검증된 값은 아니니 실기에서 [IMU] 로그로 확인 필요.
+# "<sog1>": 자이로(각속도) 원시값 추가 출력. "<soa1>": 가속도 원시값(중력 포함).
+# 현재 자세 표시에는 쓰지 않음 (파싱/로그만). 실기에서 [IMU] 로그로 확인.
 IMU_INIT_COMMANDS = [
     "<soa1>",
     "<ltf3>",
@@ -125,39 +116,7 @@ IMU_INIT_COMMAND_DELAY_SEC = 0.2   # 각 명령 사이 대기 시간
 # EBTerminal로 확인되면 이 값을 실제 명령으로 바꾸세요.
 IMU_STABILIZATION_CHECK_COMMAND = "<savc1>"
 
-# ---- Mahony AHRS 필터 (선회/가감속 시 원심력·관성력으로 인한 롤/피치
-# 노이즈를 raw 자이로+가속도로 직접 추정해서 완화) ----
-# Kp: 가속도계로 자이로 드리프트를 보정하는 강도 (0에 가까울수록 자이로만
-# 신뢰해서 원심력에 안 흔들리지만 실제 기울기 반영은 느려짐)
-# Ki: 적분 보정 강도 (0.0이면 안 씀 - 기본값 권장)
-MAHONY_KP = 0.3
-MAHONY_KI = 0.0
-
-# ---- 원심력 / 가감속 보정 (OBD 속도 사용, 항공 AHRS 의 속도 보정과 같은 원리) ----
-# 회전 중 가속도계에 섞이는 원심 가속도(= 속도 x 요레이트)와 가감속(= 속도 변화율)을
-# 빼고 나서 Mahony 필터에 넣음. OBD 속도가 끊기면(SPEED_STALE_SEC) 보정 없이 동작.
-AHRS_CENTRIPETAL_COMP = True      # 좌우: 원심력 보정 (롤)
-AHRS_LONGITUDINAL_COMP = True     # 앞뒤: 가감속 보정 (피치)
-ACCEL_UNIT_IS_G = True            # 가속도 원시값 단위가 g 인지 (m/s² 면 False)
-# 차량 기준 축 매핑 (0=x, 1=y, 2=z, GYRO_SIGN/ACCEL_SIGN 적용 후 기준)
-#   부호는 "왼쪽 = +", "앞(가속) = +" 가 되도록. 요레이트 자이로는 좌회전이 + 가정
-IMU_LATERAL_AXIS = 1
-IMU_LATERAL_SIGN = 1.0
-IMU_LONGITUDINAL_AXIS = 0
-IMU_LONGITUDINAL_SIGN = 1.0
-IMU_YAW_RATE_AXIS = 2
-SPEED_DERIV_SMOOTHING_SEC = 0.5   # OBD 속도 변화율(가감속) 평활 시간 (짧을수록 빠르지만 흔들림↑)
-# 회전할 때마다 "실측 좌우 가속도 / 계산 원심력" 비율을 [AHRS] 로그로 출력 (축·부호 점검용)
-#   +1 근처 = 정상, -1 근처 = IMU_LATERAL_SIGN 반대로, 0 근처 = 축(IMU_LATERAL_AXIS) 틀림,
-#   약 9.8 또는 0.1 = ACCEL_UNIT_IS_G 반대로
-AHRS_COMP_DIAGNOSTIC = True
-
-# 필터로 계산한 값에 잔여 노이즈 제거용으로 추가로 얹는 가벼운 EMA 스무딩.
-# 1.0이면 스무딩 없음(원값 그대로), 작을수록 더 부드럽지만 반응은 느려짐.
-ROLL_SMOOTHING_ALPHA = 0.7
-PITCH_SMOOTHING_ALPHA = 0.7
-
-# 요(헤딩)는 Mahony 필터를 안 거치고 EBIMU 출력을 필터 없이 그대로 씀 (오프셋만 적용)
+# 롤/피치/요는 EBIMU 출력을 필터·보정 없이 그대로 표시 (헤딩만 아래 오프셋 적용)
 
 # 헤딩 오프셋 (도): IMU 요값에 더해서 표시 (IMU 장착 방향/지자기 보정용).
 # PFD 나침반과 ND 헤딩 박스 모두에 적용됨. 0 이면 보정 없음

@@ -20,7 +20,7 @@ import config
 class ImuReaderThread(QThread):
     # roll_deg, pitch_deg, yaw_deg
     attitude_updated = pyqtSignal(float, float, float)
-    # gx, gy, gz (raw 각속도, deg/s 또는 rad/s - config.GYRO_UNIT_IS_DEG_PER_SEC로 표시)
+    # gx, gy, gz (raw 각속도, EBIMU 출력 단위 그대로)
     # EBIMU에 sog1로 자이로 추가 출력이 켜져 있어야 발행됨.
     gyro_updated = pyqtSignal(float, float, float)
     # ax, ay, az (가속도, m/s^2) - EBIMU에서 추가 출력 필드가 켜져 있어야 발행됨.
@@ -210,9 +210,8 @@ class ImuReaderThread(QThread):
         # EBIMU에 추가 출력 필드(자이로/가속도)가 켜져 있으면 Roll,Pitch,Yaw
         # 뒤에 3개씩 이어서 옴. 순서는 config.IMU_EXTRA_FIELD_ORDER로 결정
         # (예: ["gyro","accel"] -> Roll,Pitch,Yaw,gx,gy,gz,ax,ay,az).
-        # Mahony 필터(같은 샘플의 최신 자이로+가속도 필요)가 attitude_updated를
-        # 구독하는 쪽에서 바로 쓸 수 있도록, 자이로/가속도를 먼저 파싱/발행한
-        # 뒤에 자세각을 발행한다.
+        # (현재 자세 표시에는 안 쓰고 파싱/로그만 함. 같은 샘플의 자이로/가속도를
+        # 먼저 발행한 뒤 자세각을 발행하는 순서는 유지)
         extra_order = getattr(config, "IMU_EXTRA_FIELD_ORDER", [])
         expected_len = 3 + 3 * len(extra_order)
 
