@@ -58,12 +58,24 @@ HEADING_ARC_CENTER = (200, 640)
 HEADING_ARC_RADIUS = 220
 HEADING_VISIBLE_HALF_DEG = 55    # 그릴 범위 (화면에는 약 ±45° 보임)
 
-# ---- ND(오른쪽 화면) 레이아웃 (전방 180도 반원) ----
-ND_CENTER = (200, 460)        # 반원의 밑변 중심점 (패널 하단 쪽)
-ND_RADIUS = 380
-ND_MAX_RANGE = 50.0           # 반원 가장자리(ND_RADIUS)에 대응하는 거리
-ND_RANGE_RING_STEP = 10.0     # 거리 링 간격
-ND_RANGE_UNIT = "m"           # 링 라벨 단위 (ADS-B 등 추가 시 NM 등으로 변경)
+# ---- 오른쪽 화면: 차량 시스템 (B737/787 EICAS 시놉틱 스타일) ----
+# 경고색 기준 (None 이면 그 경고 끔)
+SYS_COOLANT_AMBER_C = 105     # 냉각수 온도 주황
+SYS_COOLANT_RED_C = 115       # 냉각수 온도 빨강
+SYS_OIL_AMBER_C = 125         # 엔진오일 온도 주황
+SYS_OIL_RED_C = 135           # 엔진오일 온도 빨강
+SYS_LOAD_AMBER_PCT = None     # 엔진 부하 주황 (기본 끔)
+SYS_BATT_LOW_V = 12.0         # 배터리 전압 이 값 미만이면 주황
+SYS_BATT_HIGH_V = 15.0        # 배터리 전압 이 값 초과면 주황
+SYS_TIRE_LOW_PSI = 30.0       # 타이어 공기압 이 값 미만이면 주황 (차의 TPMS 경고가 켜져도 주황)
+SYS_FUEL_LOW_L = 8.0          # 연료 이 값 미만이면 주황 + LOW FUEL
+# 계기 범위
+SYS_COOLANT_RANGE_C = (40, 130)
+SYS_OIL_RANGE_C = (40, 150)
+SYS_FUEL_TANK_L = 47.0        # 연료 막대 최대 (CN7 탱크 47 L)
+SYS_STEER_RANGE_DEG = 540     # 조향각 눈금 좌우 범위
+# 앞문 잠금 비트 값 (OBDb: 1 = 잠김. 실차에서 반대로 나오면 0 으로)
+SYS_DOOR_LOCKED_BIT = 1
 
 
 # ---- EBIMU-9DOFV5-R3 시리얼 설정 ----
@@ -78,6 +90,32 @@ OBD_RECONNECT_INTERVAL_SEC = 0.1
 OBD_POLL_RPM = True               # 속도(010D) 다음에 엔진 RPM(010C)도 요청
 OBD_RESPONSE_TIMEOUT_SEC = 0.4    # 응답 끝 프롬프트('>')를 기다리는 최대 시간 (이전 고정 대기와 같음)
 OBD_POLL_INTERVAL_SEC = 0.1       # 한 바퀴(속도+RPM) 요청 후 쉬는 시간
+
+# 차량 시스템 화면 데이터 (속도+RPM 한 바퀴마다 아래 중 주기가 된 항목을 최대
+# OBD_SYS_ITEMS_PER_CYCLE 개씩 끼워서 요청. 제조사 명령(Mode 22)은 헤더 전환이 필요해서 느림)
+OBD_SYS_ENABLED = True
+OBD_SYS_ITEMS_PER_CYCLE = 1
+# 속도/RPM/표준 PID 를 보낼 헤더. "7E0" = 엔진 ECU 에 직접 (엔진오일 온도와 같은 헤더라
+# 전환이 줄어듦). 어댑터가 헤더 지정을 거부하면 자동으로 "7DF"(기존 방식)로 돌아감
+OBD_BASE_HEADER = "7E0"
+# 항목별 요청 주기 (초). 요청은 한 바퀴에 하나씩이라 합계가 처리량보다 많으면
+# 모든 항목이 주기에 비례해서 같이 느려짐 (그래도 속도/RPM 갱신은 그대로)
+OBD_SYS_INTERVALS = {
+    "steer_brake": 1.0,           # 조향각 + 브레이크 압력   (7D1 22 0104)
+    "body": 2.0,                  # 앞문 잠금 + 후진(R)      (770 22 BC04)
+    "gear": 2.0,                  # 현재 기어               (7E1 22 01A4)
+    "load": 1.0,                  # 엔진 부하               (표준 0104)
+    "coolant": 10.0,              # 냉각수 온도             (표준 0105)
+    "batt": 10.0,                 # 배터리 전압             (표준 0142)
+    "oil": 10.0,                  # 엔진오일 온도           (7E0 22 E001)
+    "sat": 30.0,                  # 외기 온도               (표준 0146)
+    "fuel": 30.0,                 # 연료량                  (7C6 22 B002)
+    "tpms": 30.0,                 # 타이어 공기압/온도      (7A0 22 C00B)
+}
+OBD_MODE22_TIMEOUT_SEC = 1.0      # 제조사 명령 응답(멀티프레임) 최대 대기
+OBD_SYS_FAIL_LIMIT = 3            # 연속 이만큼 응답 없으면 미지원으로 보고
+OBD_SYS_UNSUPPORTED_RETRY_SEC = 60.0   # 미지원 항목은 이 주기로만 다시 시도
+OBD_GEAR_LAYOUT = "2021"          # 기어 위치: "2021"(2021~2024년식) / "2025"(2025년식~)
 
 # ---- 속도 표시 애니메이션 (가속도 예측 보간) ----
 # OBD 새 값이 오면, 다음 값이 올 것으로 예상되는 시간(최근 수신 간격 평균) 동안
@@ -123,8 +161,8 @@ IMU_STABILIZATION_CHECK_COMMAND = "<savc1>"
 # 롤/피치/요는 EBIMU 출력을 필터·보정 없이 그대로 표시 (헤딩만 아래 오프셋 적용)
 
 # 헤딩 오프셋 (도): IMU 요값에 더해서 표시 (IMU 장착 방향/지자기 보정용).
-# PFD 나침반과 ND 헤딩 박스 모두에 적용됨. 0 이면 보정 없음
-HEADING_OFFSET_DEG = 0.0
+# PFD 헤딩 나침반에 적용됨. 0 이면 보정 없음
+HEADING_OFFSET_DEG = 101.0
 
 # ---- 색상 (B737 스타일) ----
 COLOR_SKY = "#1f5fa8"
@@ -142,8 +180,12 @@ COLOR_FAIL_FLAG = "#f0a020"         # 데이터 끊김 고장 표시 (ATT/HDG/SP
 IMU_STALE_SEC = 0.5      # 자세(ATT)/헤딩(HDG)
 SPEED_STALE_SEC = 3.0    # 속도(SPD) - OBD 폴링 약 0.7초 간격
 COLOR_HEADING_BG = "#3a3d40"         # 헤딩 나침반 원판 (진회색)
-COLOR_ND_BG = "#0a0a0a"
-COLOR_ND_RING = "#2a2a2a"
+COLOR_SYS_BG = "#0a0a0a"            # 차량 시스템 화면 배경
+COLOR_SYS_LABEL = "#3fc8e0"         # 항목 이름 (EICAS 시안)
+COLOR_SYS_AMBER = "#f0a020"         # 주의
+COLOR_SYS_RED = "#ff3030"           # 경고
+COLOR_SYS_POINTER = "#e05ae0"       # 조향각 포인터 (마젠타)
+COLOR_SYS_NODATA = "#5a5a5a"        # 데이터 없음 (--)
 
 # IMU 내장 안정화 기능 확인 여부 표시 (ALT 글자색)
 COLOR_FEATURE_OK = "#4aa8ff"        # 파랑 - 기능 확인됨

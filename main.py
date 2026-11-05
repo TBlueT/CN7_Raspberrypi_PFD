@@ -20,9 +20,9 @@ from PyQt6.QtCore import Qt
 
 import config
 from viewmodels.pfd_viewmodel import PFDViewModel
-from viewmodels.nd_viewmodel import NDViewModel
+from viewmodels.sys_viewmodel import SysViewModel
 from views.pfd_view import PFDView
-from views.nd_view import NDView
+from views.sys_view import SysView
 from services.imu_reader import ImuReaderThread
 from services.can_reader import CanMonitorThread
 
@@ -36,7 +36,7 @@ class MainWindow(QMainWindow):
 
         # ---- ViewModel ----
         self.pfd_vm = PFDViewModel()
-        self.nd_vm = NDViewModel()
+        self.sys_vm = SysViewModel()
 
         # ---- View ----
         container = QWidget(self)
@@ -45,9 +45,9 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         self.pfd_view = PFDView(self.pfd_vm, container)
-        self.nd_view = NDView(self.nd_vm, container)
+        self.sys_view = SysView(self.sys_vm, container)
         layout.addWidget(self.pfd_view)
-        layout.addWidget(self.nd_view)
+        layout.addWidget(self.sys_view)
 
         self.setCentralWidget(container)
 
@@ -55,8 +55,6 @@ class MainWindow(QMainWindow):
         self.imu_thread = ImuReaderThread()
         self.imu_thread.attitude_updated.connect(self.pfd_vm.on_attitude_updated)
         self.imu_thread.feature_check_updated.connect(self.pfd_vm.on_imu_feature_check)
-        self.imu_thread.attitude_updated.connect(
-            lambda roll, pitch, yaw: self.nd_vm.on_heading_updated(yaw))
         self.imu_thread.connection_error.connect(self._on_imu_error)
         self.imu_thread.start()
 
@@ -66,6 +64,7 @@ class MainWindow(QMainWindow):
         self.can_thread.scc_status_updated.connect(self.pfd_vm.on_scc_status_updated)
         self.can_thread.lfa_status_updated.connect(self.pfd_vm.on_lfa_status_updated)
         self.can_thread.hda_curve_updated.connect(self.pfd_vm.on_hda_curve_updated)
+        self.can_thread.sys_values_updated.connect(self.sys_vm.on_sys_values)
         self.can_thread.connection_error.connect(self._on_can_error)
         self.can_thread.start()
 

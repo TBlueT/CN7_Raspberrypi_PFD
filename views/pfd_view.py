@@ -12,7 +12,7 @@ viewmodels.pfd_viewmodel.PFDViewModel의 model(attitude/vehicle)만 읽어서
   안에만 보이도록 클리핑됨 (실제 737처럼)
 - 속도/고도 테이프가 그 볼 양옆에 밀착 배치
 - 이 위젯 자체는 400x480 크기의 독립 패널이며, 화면 전체(800x480)의 왼쪽
-  절반을 차지. 오른쪽 절반은 views.nd_view.NDView가 담당 (main.py에서 나란히 배치)
+  절반을 차지. 오른쪽 절반은 views.sys_view.SysView(차량 시스템 화면)가 담당 (main.py에서 나란히 배치)
 - 상단 FMA(비행모드 어나운시에이터) 스타일 모드바
 - 속도 테이프에 트렌드 화살표 추가
 
