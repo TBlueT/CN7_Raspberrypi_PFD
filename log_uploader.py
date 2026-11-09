@@ -53,7 +53,8 @@ _DEFAULTS = {
 _BODY_LIMIT = 60000        # GitHub 이슈 본문 최대 65536자 - 여유 둠
 _TAIL_LINES = 200
 _IMPORTANT = re.compile(r"\[CAN\]|\[IMU\]|\[LOG\]|Traceback|Error|Exception|오류|실패|미지원|끊김")
-_STAMP = re.compile(r"^\d\d:\d\d:\d\d ")
+_STAMP = re.compile(r"^\d\d:\d\d:\d\d (?:\+\d+:\d\d:\d\d )?")
+_ELAPSED = re.compile(r"^\d\d:\d\d:\d\d \+(\d+):(\d\d):(\d\d) ")
 
 
 def _cfg(name):
@@ -81,21 +82,46 @@ def has_internet(timeout=3.0) -> bool:
 # 1) 로그 파일 저장
 # =====================================================================
 class _FileLog:
-    """로그 파일 기록: 줄마다 시각, 같은 줄 반복 생략, 크기 제한. stdout/stderr 가 공유."""
+    """로그 파일 기록: 줄마다 시각 + 실행 후 경과 시간, 같은 줄 반복 생략, 크기 제한.
+    stdout/stderr 가 공유.
 
-    def __init__(self, f, limit_bytes, dedup_sec, clock=time.time):
+    라즈베리파이 4 는 시계 배터리(RTC)가 없어서 오프라인으로 부팅하면 시계가 지난번 종료
+    시각부터 시작하고, 인터넷에 연결되면 그때 맞춰짐 -> 벽시계 시각은 틀릴 수 있으므로
+    경과 시간(+시:분:초, 부팅 후 단조 시계 기준)을 같이 찍고, 시계가 바뀌면 그 사실을 기록."""
+
+    _JUMP_SEC = 30.0
+
+    def __init__(self, f, limit_bytes, dedup_sec, wall=time.time, mono=time.monotonic):
         self._f = f
         self._limit = limit_bytes
         self._dedup = dedup_sec
-        self._clock = clock
+        self._wall = wall
+        self._mono = mono
+        self._start = mono()
+        self._last = (wall(), self._start)   # 시계 변경 감지용 (벽시계, 단조 시계)
         self._lock = threading.Lock()
         self._bytes = 0
         self._full = False
         self._in_traceback = False
-        self._recent = {}   # 줄 내용 -> {"written": 마지막 기록 시각, "n": 생략 수, "first", "last"}
+        self._recent = {}   # 줄 내용 -> {"written": 마지막 기록(단조), "n": 생략 수, "first", "last"}
 
-    def _stamp(self, t):
+    @staticmethod
+    def _hms(t):
         return datetime.datetime.fromtimestamp(t).strftime("%H:%M:%S")
+
+    def _elapsed(self, m):
+        sec = int(max(0, m - self._start))
+        return f"+{sec // 3600}:{sec // 60 % 60:02d}:{sec % 60:02d}"
+
+    def _prefix(self):
+        """'시:분:초 +경과' 머리말. 벽시계가 단조 시계와 30초 넘게 어긋나면 시계 변경 줄을 먼저 기록."""
+        w, m = self._wall(), self._mono()
+        last_w, last_m = self._last
+        if abs((w - last_w) - (m - last_m)) > self._JUMP_SEC:
+            self._emit(f"{self._hms(w)} {self._elapsed(m)} [LOG] 시계 변경 감지: {self._hms(last_w + (m - last_m))}"
+                       f" -> {self._hms(w)} (인터넷 시간 동기화 등. 앞 시각은 부정확, +경과 시간은 정확)\n")
+        self._last = (w, m)
+        return f"{self._hms(w)} {self._elapsed(m)}"
 
     def _emit(self, text):
         if self._full:
@@ -112,18 +138,18 @@ class _FileLog:
             pass
 
     def _flush_suppressed(self, now, force=False):
-        """생략 기간이 끝난 줄들의 반복 횟수를 한 줄씩 기록"""
+        """생략 기간이 끝난 줄들의 반복 횟수를 한 줄씩 기록 (now = 단조 시계)"""
         for text, r in list(self._recent.items()):
             if r["n"] and (force or now - r["written"] >= self._dedup):
-                self._emit(f"{self._stamp(now)} ... 반복 생략 {r['n']}번 "
-                           f"({self._stamp(r['first'])}~{self._stamp(r['last'])}): {text[:120]}\n")
+                self._emit(f"{self._prefix()} ... 반복 생략 {r['n']}번 "
+                           f"({self._elapsed(r['first'])}~{self._elapsed(r['last'])}): {text[:120]}\n")
                 r["n"] = 0
             if not r["n"] and now - r["written"] >= self._dedup:
                 del self._recent[text]
 
     def write_line(self, line):
         with self._lock:
-            now = self._clock()
+            now = self._mono()
             self._flush_suppressed(now)
             body = line.rstrip()
             # Traceback 블록은 그대로 (구조가 깨지면 안 됨): "Traceback" ~ 들여쓰기 없는 예외 줄
@@ -131,7 +157,7 @@ class _FileLog:
                 self._in_traceback = True
             elif self._in_traceback and body and not body[0].isspace():
                 self._in_traceback = False
-                self._emit(f"{self._stamp(now)} {line}\n")
+                self._emit(f"{self._prefix()} {line}\n")
                 return
             if self._dedup > 0 and body and not self._in_traceback:
                 r = self._recent.get(body)
@@ -142,11 +168,11 @@ class _FileLog:
                     r["last"] = now
                     return
                 self._recent[body] = {"written": now, "n": 0, "first": now, "last": now}
-            self._emit(f"{self._stamp(now)} {line}\n")
+            self._emit(f"{self._prefix()} {line}\n")
 
     def close(self):
         with self._lock:
-            self._flush_suppressed(self._clock(), force=True)
+            self._flush_suppressed(self._mono(), force=True)
 
 
 class _Tee:
@@ -279,19 +305,25 @@ def summarize_log(path):
             continue
         if in_trace or _IMPORTANT.search(body):
             important.append(line)
-    stamps = [m.group(0).strip() for m in (_STAMP.match(l) for l in lines) if m]
     name = os.path.basename(path)
     try:
         start = datetime.datetime.strptime(name[4:19], "%Y%m%d_%H%M%S")
     except ValueError:
         start = None
     duration = None
-    if start and stamps:
-        end = datetime.datetime.combine(start.date(), datetime.datetime.strptime(stamps[-1], "%H:%M:%S").time())
-        if end < start:
-            end += datetime.timedelta(days=1)
-        duration = end - start
-    info = {"name": name, "start": start, "duration": duration, "lines": len(lines),
+    elapsed = [m for m in (_ELAPSED.match(l) for l in lines) if m]
+    if elapsed:                                  # 경과 시간 기준 (시계가 틀려도 정확)
+        h, mi, se = (int(x) for x in elapsed[-1].groups())
+        duration = datetime.timedelta(hours=h, minutes=mi, seconds=se)
+    elif start:                                  # 예전 형식 로그: 벽시계 차이
+        stamps = [m.group(0)[:8] for m in (_STAMP.match(l) for l in lines) if m]
+        if stamps:
+            end = datetime.datetime.combine(start.date(), datetime.datetime.strptime(stamps[-1], "%H:%M:%S").time())
+            if end < start:
+                end += datetime.timedelta(days=1)
+            duration = end - start
+    clock_jump = any("시계 변경 감지" in l for l in lines)
+    info = {"name": name, "start": start, "duration": duration, "lines": len(lines), "clock_jump": clock_jump,
             "problems": sum(1 for l in important if re.search(r"Traceback|Error|Exception|오류|실패|미지원|끊김", l))}
     return info, _collapse_repeats(important), lines[-_TAIL_LINES:]
 
@@ -306,6 +338,8 @@ def build_issue(paths, commit=None):
             "| 실행 | 시작 | 길이 | 줄 수 | 문제 줄 |", "|---|---|---|---|---|"]
     for info, _, _ in summaries:
         start = f"{info['start']:%m-%d %H:%M}" if info["start"] else "-"
+        if info["clock_jump"]:
+            start += " (부팅 시 시계 부정확)"
         dur = f"{int(info['duration'].total_seconds() // 60)}분" if info["duration"] else "-"
         head.append(f"| `{info['name']}` | {start} | {dur} | {info['lines']} | {info['problems']} |")
     head.append("")

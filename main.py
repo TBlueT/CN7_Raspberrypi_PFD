@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
         self.can_thread.lfa_status_updated.connect(self.pfd_vm.on_lfa_status_updated)
         self.can_thread.hda_curve_updated.connect(self.pfd_vm.on_hda_curve_updated)
         self.can_thread.sys_values_updated.connect(self.sys_vm.on_sys_values)
+        self.can_thread.speed_updated.connect(self.sys_vm.on_speed_updated)
         self.can_thread.connection_error.connect(self._on_can_error)
         self.can_thread.start()
 

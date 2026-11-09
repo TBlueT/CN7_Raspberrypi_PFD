@@ -163,6 +163,18 @@ def _coolant(p):
     return {"coolant_c": decode(p, 0, 8, add=-40)}
 
 
+def _coolant_67(p):
+    """0167 (냉각수 온도 센서 1/2): A = 지원 센서 비트(bit0 센서1, bit1 센서2), B/C = 온도 + 40"""
+    sensors = extract_raw(p, 0, 8)
+    if sensors is None:
+        return {"coolant_c": None}
+    if sensors & 0x01:
+        return {"coolant_c": decode(p, 8, 8, add=-40)}
+    if sensors & 0x02:
+        return {"coolant_c": decode(p, 16, 8, add=-40)}
+    return {"coolant_c": None}
+
+
 def _batt(p):
     return {"batt_v": decode(p, 0, 16, div=1000)}
 
@@ -187,9 +199,29 @@ POLL_ITEMS = {
 }
 
 
-def decode_item(name: str, text: str):
-    """항목 이름 + ELM 응답 텍스트 -> {키: 값}. 응답이 없거나 형식이 다르면 None."""
-    _, _, _, prefix, decoder = POLL_ITEMS[name]
+# 같은 값을 다른 명령으로 받는 대안 (차가 기본 명령을 지원하지 않을 때 can_reader 가 바꿔 씀)
+# 이름: {명령: (응답 접두 바이트, 해석기)}
+ALTERNATIVES = {
+    "coolant": {"0167": (bytes.fromhex("4167"), _coolant_67)},
+}
+
+
+def parse_supported_pids(text: str, base: int):
+    """'지원 PID' 응답(0100/0120/0140/0160 -> 41 xx A B C D) -> 지원 PID 번호 집합. 실패면 None.
+    A 의 최상위 비트가 base+1, D 의 최하위 비트가 base+32 (base+32 는 다음 목록 지원 여부)."""
+    payload = payload_after(parse_elm_response(text), bytes([0x41, base]))
+    if payload is None or len(payload) < 4:
+        return None
+    bits = int.from_bytes(payload[:4], "big")
+    return {base + i + 1 for i in range(32) if bits & (1 << (31 - i))}
+
+
+def decode_item(name: str, text: str, command: str = None):
+    """항목 이름 + ELM 응답 텍스트 -> {키: 값}. 응답이 없거나 형식이 다르면 None.
+    command 가 기본 명령과 다르면 ALTERNATIVES 의 해석 사용."""
+    _, _, default_command, prefix, decoder = POLL_ITEMS[name]
+    if command and command != default_command:
+        prefix, decoder = ALTERNATIVES[name][command]
     payload = payload_after(parse_elm_response(text), prefix)
     if payload is None:
         return None

@@ -32,6 +32,7 @@ class SysViewModel(QObject):
         self._key_time = {}    # 값 키 -> 마지막 수신 시각
         self._key_gap = {}     # 값 키 -> 수신 간격 평균 (초)
         self._key_item = {}    # 값 키 -> 항목 이름
+        self._speed = None     # (km/h, 수신 시각) - 기어 표시용 (주행 중이면 D)
 
     # ---- services.can_reader.CanMonitorThread.sys_values_updated 에 연결 ----
     def on_sys_values(self, item: str, values: dict):
@@ -56,6 +57,26 @@ class SysViewModel(QObject):
                 prev = self._key_gap.get(key)
                 self._key_gap[key] = gap if prev is None else prev + 0.3 * (gap - prev)
             self._key_time[key] = now
+
+    # ---- CanMonitorThread.speed_updated 에 연결 ----
+    def on_speed_updated(self, kph: float):
+        self._speed = (kph, time.monotonic())
+
+    @property
+    def gear_text(self):
+        """기어 표시: 기어 값이 있으면 숫자, 없으면 후진 R / 주행 중(3km/h 이상) D / 그 외 None('-').
+        (국내형 CN7 은 변속기 ECU 가 기어 요청을 거절해서 후진 비트 + 속도로 판단)"""
+        gear = self.value("gear")
+        reverse = self.value("reverse")
+        if reverse:
+            return "R"
+        if gear is not None:
+            return str(gear)
+        moving = (self._speed is not None and time.monotonic() - self._speed[1] <= config.SPEED_STALE_SEC
+                  and self._speed[0] >= 3)
+        if reverse is False and moving:
+            return "D"
+        return None
 
     def valid(self, key: str) -> bool:
         """값이 있고 유효 시간 안에 받은 것인지"""

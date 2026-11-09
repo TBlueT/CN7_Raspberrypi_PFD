@@ -302,13 +302,12 @@ class SysView(QWidget):
             self._text(p, (cx - 40, top + 160, 80, 14), "LOCKED" if all_locked else "UNLOCKED",
                        self._white if all_locked else self._amber, self._f8n if all_locked else self._f8)
 
-        # 기어 (후진이면 R 주황)
-        reverse = self.vm.value("reverse")
-        gear = self.vm.value("gear")
-        if reverse:
+        # 기어 (후진 R 주황 / 기어 숫자 또는 주행 중 D / 모름 -)
+        gear = self.vm.gear_text
+        if gear == "R":
             s, color = "R", self._amber
         elif gear is not None:
-            s, color = str(gear), self._white
+            s, color = gear, self._white
         else:
             s, color = "-", self._nodata
         p.setPen(QPen(self._white, 1.4))

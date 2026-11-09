@@ -33,7 +33,7 @@ from bleak.exc import BleakError
 from PyQt6.QtCore import QThread, pyqtSignal
 
 import config
-from services.obd_decode import POLL_ITEMS, decode_item
+from services.obd_decode import POLL_ITEMS, decode_item, parse_supported_pids
 
 # "41 0D XX" (표준 PID 0D 응답: 속도, km/h) 패턴. 사이사이 공백/개행/프롬프트(>) 섞여도 매칭되게 함.
 _SPEED_RESPONSE_PATTERN = re.compile(r"41\s*0D\s*([0-9A-Fa-f]{2})")
@@ -135,6 +135,9 @@ class CanMonitorThread(QThread):
         self._resp_count_ok = None  # 응답 개수 지정('010D1') 지원 여부 (None = 아직 모름)
         self._atrv_ok = None        # ATRV(어댑터가 직접 재는 배터리 전압) 지원 여부
         self._atrv_fails = 0
+        self._fc_ok = False         # 흐름 제어 주소 지정(ATFCSH) 사용 중
+        self._item_cmd = {}         # 항목 -> 대안 명령 (예: 냉각수 0105 미지원 -> 0167)
+        self._fail_logged = set()   # 실패 응답 전체를 로그로 남긴 항목 (실행당 한 번)
 
     def run(self):
         self._running = True
@@ -190,6 +193,10 @@ class CanMonitorThread(QThread):
             info = (await self._request(client, "ATI")).replace("\r", " ").replace(">", "").strip()
             self.connection_error.emit(f"어댑터 정보(ATI): {info!r}")
             await self._probe_atrv(client)
+            await self._init_flow_control(client)
+            # 응답 개수 지정 확인 (되면 그 자리에서 타이밍 고정) + 지원 PID 확인
+            await self._std_request(client, "010D", _SPEED_RESPONSE_PATTERN.search)
+            await self._read_supported_pids(client)
             self.connection_error.emit(f"초기화 완료, 속도/RPM 폴링 시작 (헤더 {self._base_header})")
 
             while self._running and client.is_connected:
@@ -241,8 +248,64 @@ class CanMonitorThread(QThread):
         if "?" in reply:
             return False
         await self._request(client, f"ATCRA{rx_header}" if rx_header else "ATCRA")
+        if self._fc_ok:
+            await self._request(client, f"ATFCSH{header}")
         self._header = header
         return True
+
+    async def _init_flow_control(self, client: BleakClient):
+        """긴 응답(멀티프레임)을 받으려면 첫 프레임을 받은 뒤 '계속 보내라'(흐름 제어, 30 00 00)를
+        그 모듈 주소로 보내야 함. 자동 모드에선 엔진 외 모듈(7D1/7A0 등)에 주소가 안 맞을 수 있어서
+        헤더를 바꿀 때마다 같은 주소로 지정 (ATFCSH + ATFCSD300000 + ATFCSM1). 안 되면 자동 모드."""
+        if not config.OBD_FLOW_CONTROL or not self._header_switch_ok:
+            return
+        replies = [await self._request(client, cmd) for cmd in
+                   (f"ATFCSH{self._header}", "ATFCSD300000", "ATFCSM1")]
+        if any("?" in r for r in replies):
+            await self._request(client, "ATFCSM0")
+            self.connection_error.emit("흐름 제어 지정(ATFCSH/SD/SM1) 미지원 -> 자동 모드 유지")
+            return
+        self._fc_ok = True
+        self.connection_error.emit(f"흐름 제어 주소 지정 사용 (ATFCSM1, 현재 {self._header})")
+
+    async def _apply_fixed_timing(self, client: BleakClient):
+        """적응형 타이밍(ATAT1, 기본)은 빠른 엔진 응답에 맞춰 대기 시간을 줄여서, 느린 모듈의
+        나머지 프레임을 못 기다리고 첫 프레임만 남는 원인이 됨 -> ATAT0 + ATST 고정.
+        응답 개수 지정이 될 때만 적용 (그래야 표준 PID 요청이 대기 시간만큼 느려지지 않음)."""
+        if not config.OBD_FIXED_TIMING:
+            return
+        value = max(1, min(255, round(config.OBD_ELM_TIMEOUT_MS / 4)))
+        r1 = await self._request(client, "ATAT0")
+        r2 = await self._request(client, f"ATST{value:02X}")
+        if "?" in r1 or "?" in r2:
+            self.connection_error.emit(f"타이밍 고정 미지원 (ATAT0 {r1.strip()[:10]!r}, ATST {r2.strip()[:10]!r})")
+        else:
+            self.connection_error.emit(f"타이밍 고정: ATAT0 + ATST{value:02X} ({value * 4}ms)")
+
+    async def _read_supported_pids(self, client: BleakClient):
+        """기본 헤더 ECU 의 지원 PID 목록(0100/0120/0140/0160)을 읽어 로그로 남기고,
+        냉각수 0105 가 없고 0167 이 있으면 냉각수는 0167 로 요청."""
+        supported = set()
+        for base in (0x00, 0x20, 0x40, 0x60):
+            command = f"01{base:02X}"
+            text = await self._std_request(client, command,
+                                           lambda t, b=base: parse_supported_pids(t, b) is not None)
+            pids = parse_supported_pids(text, base)
+            if pids is None:
+                if base == 0x00:
+                    self.connection_error.emit(f"지원 PID 목록 못 읽음 ({text.strip()[:30]!r})")
+                    return
+                break
+            supported |= pids
+            if base + 0x20 not in pids:
+                break
+        listed = " ".join(f"{p:02X}" for p in sorted(supported) if p % 0x20)
+        self.connection_error.emit(f"지원 PID ({self._header}): {listed}")
+        if 0x05 not in supported and 0x67 in supported:
+            self._item_cmd["coolant"] = "0167"
+            self.connection_error.emit("냉각수: 0105 미지원, 0167(센서 1/2) 지원 -> 0167 로 요청")
+        elif 0x05 not in supported:
+            self.connection_error.emit("냉각수: 0105/0167 둘 다 지원 목록에 없음")
 
     async def _ensure_header(self, client: BleakClient, header, rx_header):
         """요청 헤더 전환 (같으면 생략). header=None 이면 기본 헤더(속도/RPM/표준 PID)."""
@@ -280,6 +343,7 @@ class CanMonitorThread(QThread):
         if is_ok(text):
             self._resp_count_ok = True
             self.connection_error.emit(f"응답 개수 지정 지원 ({command}1) -> 표준 PID 요청에 사용")
+            await self._apply_fixed_timing(client)
             return text
         plain = await self._request(client, command, timeout)
         if is_ok(plain):
@@ -289,6 +353,7 @@ class CanMonitorThread(QThread):
 
     async def _poll_sys_item(self, client: BleakClient, name: str):
         header, rx_header, command, _, _ = POLL_ITEMS[name]
+        command = self._item_cmd.get(name, command)
         if name == "batt" and self._atrv_ok:
             command = "ATRV"
             text = await self._request(client, "ATRV")
@@ -300,10 +365,11 @@ class CanMonitorThread(QThread):
                 self.connection_error.emit(f"ATRV 응답 이상 ({text.strip()[:30]!r}) -> 배터리 전압은 0142 로 요청")
         elif await self._ensure_header(client, header, rx_header):
             if command.startswith("01"):
-                text = await self._std_request(client, command, lambda t: decode_item(name, t) is not None)
+                text = await self._std_request(client, command,
+                                               lambda t: decode_item(name, t, command) is not None)
             else:
                 text = await self._request(client, command, config.OBD_MODE22_TIMEOUT_SEC)
-            values = decode_item(name, text)
+            values = decode_item(name, text, command)
         else:
             text = "?"
             values = None
@@ -315,10 +381,14 @@ class CanMonitorThread(QThread):
             self.sys_values_updated.emit(name, values)
         else:
             st["last_fail"] = text.strip().replace("\r", " ")[:40]
+            if name not in self._fail_logged:     # 실패 응답 전체를 실행당 한 번 남김 (원인 분석용)
+                self._fail_logged.add(name)
+                self.connection_error.emit(
+                    f"{name}({header or self._base_header} {command}) 첫 실패 응답 전체: {text.strip()[:300]!r}")
         if update_after_poll(self._sys_schedule, name, values is not None, time.monotonic()):
             self.connection_error.emit(
                 f"{name}({header or self._base_header} {command}) 응답 없음 -> 미지원으로 보고 "
-                f"{config.OBD_SYS_UNSUPPORTED_RETRY_SEC:.0f}초마다 재시도. 마지막 응답: {text.strip()[:60]!r}")
+                f"{config.OBD_SYS_UNSUPPORTED_RETRY_SEC:.0f}초마다 재시도")
 
     async def _request(self, client: BleakClient, command: str, timeout: float = None) -> str:
         """명령을 보내고 프롬프트('>')가 올 때까지 기다린 뒤 받은 응답 문자열을 반환.

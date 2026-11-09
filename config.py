@@ -103,7 +103,8 @@ OBD_BASE_HEADER = "7E0"
 OBD_SYS_INTERVALS = {
     "steer_brake": 1.0,           # 조향각 + 브레이크 압력   (7D1 22 0104)
     "body": 2.0,                  # 앞문 잠금 + 후진(R)      (770 22 BC04)
-    "gear": 2.0,                  # 현재 기어               (7E1 22 01A4)
+    # "gear": 2.0,                # 현재 기어 (7E1 22 01A4) - 국내형 CN7 변속기 ECU 가 거절(7F 22 22)해서 끔.
+    #                               화면 기어는 후진(R, body 항목) / 주행 중 D / 정차 - 로 표시
     "load": 1.0,                  # 엔진 부하               (표준 0104)
     "coolant": 10.0,              # 냉각수 온도             (표준 0105)
     "batt": 10.0,                 # 배터리 전압             (표준 0142)
@@ -121,6 +122,10 @@ OBD_DIAG_INTERVAL_SEC = 30.0      # 이 주기로 OBD 요약 로그 ([CAN] 30초
 # ELM327 부가 기능 (연결 후 자동 확인, 안 되면 기존 방식으로)
 OBD_USE_RESPONSE_COUNT = True     # 표준 PID 끝에 응답 개수 '1' 을 붙여 응답 하나 받으면 바로 끝냄 (010D1)
 OBD_USE_ATRV = True               # 배터리 전압을 ATRV(어댑터가 OBD 포트 전압 직접 측정)로 읽음
+# 긴 응답(멀티프레임)이 첫 프레임만 오고 끊기는 문제 대응 (실차 2026-11-09: 조향각/타이어/오일)
+OBD_FIXED_TIMING = True           # ATAT0: 적응형 타이밍 끄고 ATST 로 대기 시간 고정
+OBD_ELM_TIMEOUT_MS = 200          # ATST 값 (ms, 4ms 단위). 응답 개수 지정이 될 때만 적용 (속도 요청은 안 느려짐)
+OBD_FLOW_CONTROL = True           # 헤더 바꿀 때 흐름 제어 주소도 지정 (ATFCSH/ATFCSD/ATFCSM1)
 
 # ---- 실행 로그 저장 + GitHub 이슈 자동 업로드 (log_uploader.py) ----
 # 콘솔 로그를 실행마다 파일로 저장하고, 인터넷이 될 때만 안 올린 로그를 새 이슈 하나로 올림
@@ -160,11 +165,13 @@ IMU_LINE_PREFIX = "*"
 # 순서대로 3개씩 더 붙어 옴. 이 리스트가 그 순서를 나타냄
 # (예: ["gyro","accel"] -> *Roll,Pitch,Yaw,gx,gy,gz,ax,ay,az).
 # 자이로/가속도 필드가 전혀 없으면 빈 리스트로 두면 됨(자세각만 파싱).
-IMU_EXTRA_FIELD_ORDER = ["gyro", "accel"]
+# 실기 출력(2026-11-09): "*롤,피치,요,ax,ay,az,카운터" -> 가속도만 켜져 있음 (뒤 카운터는 무시)
+IMU_EXTRA_FIELD_ORDER = ["accel"]
 
 # ---- EBIMU 부팅/재연결 시 자동으로 보낼 초기화 명령 ----
 # "<sog1>": 자이로(각속도) 원시값 추가 출력. "<soa1>": 가속도 원시값(중력 포함).
 # 현재 자세 표시에는 쓰지 않음 (파싱/로그만). 실기에서 [IMU] 로그로 확인.
+# 실기(2026-11-09): <soa1>/<ssa2> 는 <ok>, <ltf3> 는 <er>(센서가 거부) 응답.
 IMU_INIT_COMMANDS = [
     "<soa1>",
     "<ltf3>",
