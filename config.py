@@ -112,10 +112,12 @@ OBD_SYS_INTERVALS = {
     "fuel": 30.0,                 # 연료량                  (7C6 22 B002)
     "tpms": 30.0,                 # 타이어 공기압/온도      (7A0 22 C00B)
 }
-OBD_MODE22_TIMEOUT_SEC = 1.0      # 제조사 명령 응답(멀티프레임) 최대 대기
-OBD_SYS_FAIL_LIMIT = 3            # 연속 이만큼 응답 없으면 미지원으로 보고
+OBD_MODE22_TIMEOUT_SEC = 1.0      # 제조사 명령 응답(멀티프레임) 기본 대기
+OBD_LATE_PROMPT_WAIT_SEC = 1.0    # 위 제한시간을 넘기면 프롬프트('>')를 이만큼 더 기다림 (명령 꼬임 방지)
+OBD_SYS_FAIL_LIMIT = 3            # 한 번도 응답한 적 없는 항목이 연속 이만큼 실패하면 미지원으로 보고
 OBD_SYS_UNSUPPORTED_RETRY_SEC = 60.0   # 미지원 항목은 이 주기로만 다시 시도
 OBD_GEAR_LAYOUT = "2021"          # 기어 위치: "2021"(2021~2024년식) / "2025"(2025년식~)
+OBD_DIAG_INTERVAL_SEC = 30.0      # 이 주기로 OBD 요약 로그 ([CAN] 30초 요약: ...). 0 이면 끔
 
 # ---- 속도 표시 애니메이션 (가속도 예측 보간) ----
 # OBD 새 값이 오면, 다음 값이 올 것으로 예상되는 시간(최근 수신 간격 평균) 동안

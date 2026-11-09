@@ -51,8 +51,10 @@ def _response_header(header: str):
 
 
 def new_sys_schedule():
-    """항목별 폴링 상태: 다음 요청 시각, 연속 실패 수, 미지원 여부"""
-    return {name: {"next": 0.0, "fails": 0, "unsupported": False}
+    """항목별 폴링 상태: 다음 요청 시각, 연속 실패 수, 미지원 여부, 한 번이라도 성공했는지
+    + 진단 통계(ok/total/응답시간 합/마지막 실패 응답)"""
+    return {name: {"next": 0.0, "fails": 0, "unsupported": False, "ever_ok": False,
+                   "ok": 0, "total": 0, "time_sum": 0.0, "last_fail": ""}
             for name in POLL_ITEMS if name in config.OBD_SYS_INTERVALS}
 
 
@@ -72,15 +74,19 @@ def pick_due(schedule: dict, now: float):
 
 
 def update_after_poll(schedule: dict, name: str, ok: bool, now: float):
-    """요청 결과 반영 -> 다음 요청 시각. 미지원으로 막 바뀌었으면 True 반환 (로그용)"""
+    """요청 결과 반영 -> 다음 요청 시각. 미지원으로 막 바뀌었으면 True 반환 (로그용).
+    한 번이라도 응답한 항목은 실패해도 일시적인 것으로 보고 원래 주기로 계속 요청
+    (예전에는 3번 연속 실패면 60초 쉬어서 '들어오다 끊기는' 원인이 됐음)."""
     st = schedule[name]
     newly_unsupported = False
     if ok:
         st["fails"] = 0
         st["unsupported"] = False
+        st["ever_ok"] = True
     else:
         st["fails"] += 1
-        if st["fails"] >= config.OBD_SYS_FAIL_LIMIT and not st["unsupported"]:
+        if (st["fails"] >= config.OBD_SYS_FAIL_LIMIT and not st["unsupported"]
+                and not st["ever_ok"]):
             st["unsupported"] = True
             newly_unsupported = True
     wait = config.OBD_SYS_UNSUPPORTED_RETRY_SEC if st["unsupported"] else config.OBD_SYS_INTERVALS[name]
@@ -108,6 +114,12 @@ class CanMonitorThread(QThread):
         self._header = None         # 지금 설정된 요청 헤더 (None = 모름)
         self._base_header = None    # 속도/RPM/표준 PID 요청 헤더 (연결 후 결정)
         self._header_switch_ok = True
+        # 진단 (OBD_DIAG_INTERVAL_SEC 마다 요약 로그)
+        self._diag_start = time.monotonic()
+        self._diag_speed = 0
+        self._diag_late = 0        # 제한시간 넘겨서 늦게 온 응답
+        self._diag_noprompt = 0    # 끝내 프롬프트가 안 온 응답
+        self._diag_last_time = 0.0
         self._sys_schedule = new_sys_schedule()
 
     def run(self):
@@ -169,6 +181,7 @@ class CanMonitorThread(QThread):
                 match = _SPEED_RESPONSE_PATTERN.search(text)
                 if match:
                     self.speed_updated.emit(float(int(match.group(1), 16)))
+                    self._diag_speed += 1
 
                 if config.OBD_POLL_RPM:
                     text = await self._request(client, "010C")
@@ -184,6 +197,7 @@ class CanMonitorThread(QThread):
                             break
                         await self._poll_sys_item(client, name)
 
+                self._maybe_log_diag()
                 await asyncio.sleep(config.OBD_POLL_INTERVAL_SEC)
         finally:
             await client.disconnect()
@@ -230,24 +244,66 @@ class CanMonitorThread(QThread):
         else:
             text = "?"
         values = decode_item(name, text)
+        st = self._sys_schedule[name]
+        st["total"] += 1
+        st["time_sum"] += self._diag_last_time
         if values is not None:
+            st["ok"] += 1
             self.sys_values_updated.emit(name, values)
+        else:
+            st["last_fail"] = text.strip().replace("\r", " ")[:40]
         if update_after_poll(self._sys_schedule, name, values is not None, time.monotonic()):
             self.connection_error.emit(
                 f"{name}({header or self._base_header} {command}) 응답 없음 -> 미지원으로 보고 "
                 f"{config.OBD_SYS_UNSUPPORTED_RETRY_SEC:.0f}초마다 재시도. 마지막 응답: {text.strip()[:60]!r}")
 
     async def _request(self, client: BleakClient, command: str, timeout: float = None) -> str:
-        """명령을 보내고 프롬프트('>')가 올 때까지(최대 timeout, 기본 OBD_RESPONSE_TIMEOUT_SEC)
-        기다린 뒤 받은 응답 문자열을 반환."""
+        """명령을 보내고 프롬프트('>')가 올 때까지 기다린 뒤 받은 응답 문자열을 반환.
+
+        제한시간(timeout, 기본 OBD_RESPONSE_TIMEOUT_SEC) 안에 프롬프트가 안 오면
+        OBD_LATE_PROMPT_WAIT_SEC 만큼 더 기다림: ELM327 은 응답 중에 새 명령을 받으면
+        하던 일을 STOPPED 로 끊고 새 명령도 버리기 때문에, 바로 다음 명령을 보내면
+        이후 요청들이 줄줄이 실패함 (값이 들어오다 끊기는 원인). 늦게 온 응답도 그대로 사용."""
         self._rx_buffer = b""
         self._prompt_event.clear()
+        t0 = time.monotonic()
         await client.write_gatt_char(self._tx_uuid, (command + "\r").encode("ascii"), response=True)
         try:
             await asyncio.wait_for(self._prompt_event.wait(), timeout or config.OBD_RESPONSE_TIMEOUT_SEC)
         except asyncio.TimeoutError:
-            pass
+            self._diag_late += 1
+            try:
+                await asyncio.wait_for(self._prompt_event.wait(), config.OBD_LATE_PROMPT_WAIT_SEC)
+            except asyncio.TimeoutError:
+                self._diag_noprompt += 1
+        self._diag_last_time = time.monotonic() - t0
         return self._rx_buffer.decode("ascii", errors="ignore")
+
+    def _maybe_log_diag(self):
+        """OBD_DIAG_INTERVAL_SEC 마다 한 줄 요약: 속도 갱신 주기, 늦은/무응답 수, 항목별 성공률·응답시간"""
+        if not config.OBD_DIAG_INTERVAL_SEC:
+            return
+        now = time.monotonic()
+        span = now - self._diag_start
+        if span < config.OBD_DIAG_INTERVAL_SEC:
+            return
+        parts = [f"속도 {self._diag_speed}회({span / max(1, self._diag_speed):.2f}s)",
+                 f"늦은응답 {self._diag_late}", f"무응답 {self._diag_noprompt}"]
+        for name, st in self._sys_schedule.items():
+            if st["total"] == 0:
+                parts.append(f"{name} -")
+                continue
+            item = f"{name} {st['ok']}/{st['total']} {st['time_sum'] / st['total']:.2f}s"
+            if st["ok"] < st["total"]:
+                item += f" 실패응답={st['last_fail']!r}"
+            if st["unsupported"]:
+                item += " (미지원)"
+            parts.append(item)
+            st["ok"] = st["total"] = 0
+            st["time_sum"] = 0.0
+        self.connection_error.emit(f"{span:.0f}초 요약: " + " | ".join(parts))
+        self._diag_start = now
+        self._diag_speed = self._diag_late = self._diag_noprompt = 0
 
     async def _send_at(self, client: BleakClient, command: str, wait_sec: float = 0.3):
         await client.write_gatt_char(self._tx_uuid, (command + "\r").encode("ascii"), response=True)

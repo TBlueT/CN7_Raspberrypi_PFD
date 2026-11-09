@@ -55,6 +55,8 @@ def parse_elm_response(text: str):
         return None
     data = bytes.fromhex(hex_text[: len(hex_text) // 2 * 2])
     if length is not None:
+        if len(data) < length:      # 멀티프레임 일부가 빠짐 -> 잘린 값으로 해석하지 않음
+            return None
         data = data[:length]
     return data
 
