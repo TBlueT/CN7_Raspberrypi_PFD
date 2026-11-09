@@ -61,7 +61,8 @@ views/        순수 렌더링 (QWidget). 값 계산 없이 ViewModel을 고정 
 
 config.py     화면 크기, 색상, 시리얼/BLE 설정, 각종 임계값 등 전역 설정
 main.py       services/viewmodels/views를 생성하고 서로 연결(wiring)
-launcher.py   부팅 시 인터넷 연결되면 GitHub에서 최신 코드로 업데이트 후 main.py 실행
+launcher.py   부팅 시 인터넷 연결되면 GitHub에서 최신 코드로 업데이트 + 로그 업로드 후 main.py 실행
+log_uploader.py  실행 로그 파일 저장 + 온라인일 때 GitHub 이슈로 업로드
 ```
 
 데이터 흐름: **services → viewmodels → views** (단방향). views에는 `set_*` 류
@@ -135,6 +136,11 @@ EBIMU 가 출력하는 Roll/Pitch/Yaw 를 **필터·보정 없이 그대로** �
   ELM327 은 응답 중 새 명령을 받으면 하던 일을 STOPPED 로 끊고 새 명령도 버려서 요청이 줄줄이 실패함
 - 멀티프레임 일부가 빠진 응답은 버리고, 해석 못 한 값은 이전 값을 지우지 않음
 - 값이 없거나 오래되면 회색 `--` (유효 시간 = 실제 수신 간격 x3, 최소 10초)
+- ELM327 부가 기능 (연결 후 자동 확인, 안 되면 기존 방식):
+  - 응답 개수 지정: 표준 PID 끝에 `1` 을 붙여(`010D1`) 응답 하나 받으면 바로 끝냄 → 다른 ECU 응답 대기 시간 절약
+    (`OBD_USE_RESPONSE_COUNT`)
+  - `ATRV`: 배터리 전압을 어댑터가 OBD 포트에서 직접 측정 → ECU 요청(0142)·헤더 전환 없음 (`OBD_USE_ATRV`)
+  - 연결 시 `ATI`(어댑터 버전)와 각 기능 지원 여부를 로그로 남김
 - 30초마다 콘솔에 요약 로그: `[CAN] 30초 요약: 속도 N회(간격) | 늦은응답 | 무응답 | 항목 성공/요청 평균응답시간 실패응답='…'`
   (`OBD_DIAG_INTERVAL_SEC`, 0 이면 끔)
 - 경고색 기준은 `config.py` 의 `SYS_*` (냉각수/오일 주황·빨강, 배터리 저·고전압, 타이어 저압, 연료 부족).
@@ -171,9 +177,35 @@ python3 main.py
 
 또는 부팅 시 자동 업데이트까지 원하면 `main.py` 대신 `launcher.py` 실행
 (systemd 서비스의 `ExecStart`를 `launcher.py`로 지정).
-런처는 부팅 화면(`CN7 PFD STARTUP`)에 NETWORK / BACKUP / UPDATE / LAUNCH 단계와
+런처는 부팅 화면(`CN7 PFD STARTUP`)에 NETWORK / BACKUP / UPDATE / LOGS / LAUNCH 단계와
 업데이트된 커밋, 실패 원인을 표시하고 3초 뒤 main.py를 실행합니다. 화면을 띄우지
 못하면 콘솔 출력 방식으로 자동 전환되어 부팅이 멈추지 않습니다.
+
+## 실차 로그 자동 업로드 (GitHub 이슈)
+
+- 실행할 때마다 콘솔 로그(`[CAN]`/`[IMU]`, 오류, 프로그램이 죽을 때의 Traceback)를 시각과 함께
+  `~/cn7_logs/run_날짜_시각.log` 에 저장 (코드 폴더 밖이라 git pull 과 무관, 실행당 최대 5MB)
+- 같은 줄 생략: 60초 안에 이미 기록한 줄이 또 나오면 파일엔 안 쓰고 횟수만 세었다가
+  `... 반복 생략 29번 (10:00:02~10:00:58): 내용` 한 줄로 남김 (번갈아 반복되는 재연결 로그도 해당,
+  Traceback 은 그대로, 콘솔 출력은 그대로). 재연결 루프 10분 기준 48KB → 6KB. `LOG_DEDUP_WINDOW_SEC`
+- **인터넷이 될 때만** 아직 안 올린 로그를 모아 **새 이슈 하나**로 올림
+  - 부팅 시: 런처 화면 `LOGS` 단계 (UPLOADED / NO NEW LOGS / NO TOKEN / FAIL)
+  - 실행 중: 10분마다 확인 (부팅 때 오프라인이었다가 나중에 연결된 경우, 지금 실행 중인 로그는 제외)
+- 이슈 내용: 실행별 요약 표 + 문제/상태 줄(같은 줄 반복은 접음) + 마지막 200줄(접힌 상세)
+- 올린 로그는 `~/cn7_logs/sent/` 로 옮기고 30개까지만 보관. 업로드 실패 시 다음에 다시 시도
+- 저장소가 공개면 이슈도 공개됨 (로그에 OBD 어댑터 MAC 주소 포함)
+
+**토큰 설정 (한 번만)**
+1. GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token
+2. Repository access: *Only select repositories* → `CN7_Raspberrypi_PFD`
+3. Permissions → Repository permissions → **Issues: Read and write** (다른 권한은 필요 없음)
+4. 라즈베리파이에서:
+   ```bash
+   mkdir -p ~/.config/cn7
+   nano ~/.config/cn7/github_token      # 토큰 붙여넣고 저장
+   chmod 600 ~/.config/cn7/github_token
+   ```
+토큰 파일이 없으면 업로드만 건너뛰고 로그 저장은 계속됨. 설정은 `config.py` 의 `LOG_*`.
 
 ## 알려진 제약/TODO
 

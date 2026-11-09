@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout
 from PyQt6.QtCore import Qt
 
 import config
+import log_uploader
 from viewmodels.pfd_viewmodel import PFDViewModel
 from viewmodels.sys_viewmodel import SysViewModel
 from views.pfd_view import PFDView
@@ -82,6 +83,8 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    log_uploader.start_file_log()             # 콘솔 로그를 ~/cn7_logs 에도 저장
+    log_uploader.start_background_uploader()  # 실행 중 온라인이 되면 이전 로그를 이슈로 업로드
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()

@@ -22,6 +22,7 @@ from services.obd_decode import POLL_ITEMS
 
 SYS_STALE_FACTOR = 3.0
 SYS_STALE_MIN_SEC = 10.0
+SYS_STALE_FIRST_SEC = 30.0   # 수신 간격을 아직 모를 때(두 번째 값이 오기 전) 유지 시간
 
 
 class SysViewModel(QObject):
@@ -63,6 +64,8 @@ class SysViewModel(QObject):
             return False
         interval = max(config.OBD_SYS_INTERVALS.get(item, 1.0), self._key_gap.get(key, 0.0))
         limit = max(interval * SYS_STALE_FACTOR, SYS_STALE_MIN_SEC)
+        if key not in self._key_gap:
+            limit = max(limit, SYS_STALE_FIRST_SEC)
         return time.monotonic() - self._key_time[key] <= limit
 
     def value(self, key: str):

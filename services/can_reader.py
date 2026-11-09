@@ -41,6 +41,16 @@ _SPEED_RESPONSE_PATTERN = re.compile(r"41\s*0D\s*([0-9A-Fa-f]{2})")
 _RPM_RESPONSE_PATTERN = re.compile(r"41\s*0C\s*([0-9A-Fa-f]{2})\s*([0-9A-Fa-f]{2})")
 
 _DEFAULT_HEADER = "7DF"   # 표준 OBD 기능 주소 (모든 ECU 에 묻기, ATZ 직후 기본값)
+_VOLT_PATTERN = re.compile(r"(\d{1,2}(?:\.\d+)?)\s*V", re.IGNORECASE)
+
+
+def parse_atrv(text: str):
+    """ATRV 응답("12.6V") -> 전압. 형식이 다르거나 범위(5~20V) 밖이면 None"""
+    m = _VOLT_PATTERN.search(text or "")
+    if not m:
+        return None
+    volt = float(m.group(1))
+    return volt if 5.0 <= volt <= 20.0 else None
 
 
 def _response_header(header: str):
@@ -121,6 +131,10 @@ class CanMonitorThread(QThread):
         self._diag_noprompt = 0    # 끝내 프롬프트가 안 온 응답
         self._diag_last_time = 0.0
         self._sys_schedule = new_sys_schedule()
+        # 어댑터 기능 (자동 판단, 안 되면 기존 방식)
+        self._resp_count_ok = None  # 응답 개수 지정('010D1') 지원 여부 (None = 아직 모름)
+        self._atrv_ok = None        # ATRV(어댑터가 직접 재는 배터리 전압) 지원 여부
+        self._atrv_fails = 0
 
     def run(self):
         self._running = True
@@ -173,18 +187,21 @@ class CanMonitorThread(QThread):
             await self._send_at(client, "ATSP6")   # 현대차 표준: CAN 11bit 500kbps 고정
             self._header = _DEFAULT_HEADER   # ATZ 직후 기본값
             await self._init_base_header(client)
+            info = (await self._request(client, "ATI")).replace("\r", " ").replace(">", "").strip()
+            self.connection_error.emit(f"어댑터 정보(ATI): {info!r}")
+            await self._probe_atrv(client)
             self.connection_error.emit(f"초기화 완료, 속도/RPM 폴링 시작 (헤더 {self._base_header})")
 
             while self._running and client.is_connected:
                 await self._ensure_header(client, None, None)
-                text = await self._request(client, "010D")
+                text = await self._std_request(client, "010D", _SPEED_RESPONSE_PATTERN.search)
                 match = _SPEED_RESPONSE_PATTERN.search(text)
                 if match:
                     self.speed_updated.emit(float(int(match.group(1), 16)))
                     self._diag_speed += 1
 
                 if config.OBD_POLL_RPM:
-                    text = await self._request(client, "010C")
+                    text = await self._std_request(client, "010C", _RPM_RESPONSE_PATTERN.search)
                     match = _RPM_RESPONSE_PATTERN.search(text)
                     if match:
                         rpm = (int(match.group(1), 16) * 256 + int(match.group(2), 16)) / 4.0
@@ -236,14 +253,60 @@ class CanMonitorThread(QThread):
             return True
         return await self._switch_header(client, header, rx_header)
 
+    async def _probe_atrv(self, client: BleakClient):
+        """ATRV(OBD 포트 16번 핀 전압을 어댑터가 직접 측정) 지원 확인.
+        되면 배터리 전압은 ECU 에 묻지 않고(0142) 이걸로 읽음 - 헤더 전환도 필요 없음."""
+        if not config.OBD_USE_ATRV:
+            self._atrv_ok = False
+            return
+        reply = await self._request(client, "ATRV")
+        volt = parse_atrv(reply)
+        self._atrv_ok = volt is not None
+        if self._atrv_ok:
+            self.connection_error.emit(f"ATRV 지원 ({volt:.1f}V) -> 배터리 전압은 어댑터에서 직접 읽음")
+        else:
+            self.connection_error.emit(f"ATRV 미지원 ({reply.strip()[:30]!r}) -> 배터리 전압은 0142 로 요청")
+
+    async def _std_request(self, client: BleakClient, command: str, is_ok, timeout: float = None) -> str:
+        """응답이 하나인 표준 PID(01xx) 요청. 어댑터가 응답 개수 지정을 지원하면 명령 끝에 '1'
+        을 붙여서(예: 010D1) 응답 하나를 받는 즉시 끝내게 함 -> 다른 ECU 응답을 기다리는
+        시간만큼 빨라짐. 지원 여부는 처음 요청들로 자동 판단:
+        '1' 붙인 요청이 성공 -> 지원 / 실패했는데 그냥 요청은 성공 -> 미지원(이후 기존 방식)."""
+        if self._resp_count_ok is False or not config.OBD_USE_RESPONSE_COUNT:
+            return await self._request(client, command, timeout)
+        text = await self._request(client, command + "1", timeout)
+        if self._resp_count_ok:
+            return text
+        if is_ok(text):
+            self._resp_count_ok = True
+            self.connection_error.emit(f"응답 개수 지정 지원 ({command}1) -> 표준 PID 요청에 사용")
+            return text
+        plain = await self._request(client, command, timeout)
+        if is_ok(plain):
+            self._resp_count_ok = False
+            self.connection_error.emit(f"응답 개수 지정 미지원 ({command}1 -> {text.strip()[:30]!r}) -> 기존 방식")
+        return plain
+
     async def _poll_sys_item(self, client: BleakClient, name: str):
         header, rx_header, command, _, _ = POLL_ITEMS[name]
-        if await self._ensure_header(client, header, rx_header):
-            timeout = config.OBD_MODE22_TIMEOUT_SEC if command.startswith("22") else config.OBD_RESPONSE_TIMEOUT_SEC
-            text = await self._request(client, command, timeout)
+        if name == "batt" and self._atrv_ok:
+            command = "ATRV"
+            text = await self._request(client, "ATRV")
+            volt = parse_atrv(text)
+            values = None if volt is None else {"batt_v": volt}
+            self._atrv_fails = 0 if volt is not None else self._atrv_fails + 1
+            if self._atrv_fails >= config.OBD_SYS_FAIL_LIMIT:
+                self._atrv_ok = False
+                self.connection_error.emit(f"ATRV 응답 이상 ({text.strip()[:30]!r}) -> 배터리 전압은 0142 로 요청")
+        elif await self._ensure_header(client, header, rx_header):
+            if command.startswith("01"):
+                text = await self._std_request(client, command, lambda t: decode_item(name, t) is not None)
+            else:
+                text = await self._request(client, command, config.OBD_MODE22_TIMEOUT_SEC)
+            values = decode_item(name, text)
         else:
             text = "?"
-        values = decode_item(name, text)
+            values = None
         st = self._sys_schedule[name]
         st["total"] += 1
         st["time_sum"] += self._diag_last_time

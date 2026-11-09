@@ -118,6 +118,22 @@ OBD_SYS_FAIL_LIMIT = 3            # 한 번도 응답한 적 없는 항목이 �
 OBD_SYS_UNSUPPORTED_RETRY_SEC = 60.0   # 미지원 항목은 이 주기로만 다시 시도
 OBD_GEAR_LAYOUT = "2021"          # 기어 위치: "2021"(2021~2024년식) / "2025"(2025년식~)
 OBD_DIAG_INTERVAL_SEC = 30.0      # 이 주기로 OBD 요약 로그 ([CAN] 30초 요약: ...). 0 이면 끔
+# ELM327 부가 기능 (연결 후 자동 확인, 안 되면 기존 방식으로)
+OBD_USE_RESPONSE_COUNT = True     # 표준 PID 끝에 응답 개수 '1' 을 붙여 응답 하나 받으면 바로 끝냄 (010D1)
+OBD_USE_ATRV = True               # 배터리 전압을 ATRV(어댑터가 OBD 포트 전압 직접 측정)로 읽음
+
+# ---- 실행 로그 저장 + GitHub 이슈 자동 업로드 (log_uploader.py) ----
+# 콘솔 로그를 실행마다 파일로 저장하고, 인터넷이 될 때만 안 올린 로그를 새 이슈 하나로 올림
+# (부팅 시 런처 LOGS 단계 + 실행 중 LOG_UPLOAD_RETRY_MIN 분마다 확인)
+LOG_DIR = "~/cn7_logs"                          # 코드 폴더(~/cn7) 밖 - git pull 과 무관
+LOG_MAX_FILE_MB = 5                             # 실행 하나당 최대 크기
+LOG_DEDUP_WINDOW_SEC = 60                       # 이 시간 안에 같은 줄이 또 나오면 파일엔 안 쓰고 횟수만 (0 = 끔)
+LOG_KEEP_SENT = 30                              # 올린 로그(LOG_DIR/sent)를 몇 개까지 남길지
+LOG_UPLOAD_ENABLED = True
+LOG_UPLOAD_REPO = "TBlueT/CN7_Raspberrypi_PFD"  # 이슈를 올릴 저장소
+LOG_UPLOAD_TOKEN_FILE = "~/.config/cn7/github_token"   # fine-grained token (Issues: Read and write)
+LOG_UPLOAD_API = "https://api.github.com"
+LOG_UPLOAD_RETRY_MIN = 10                       # 실행 중 업로드 확인 주기 (분), 0 이면 부팅 때만
 
 # ---- 속도 표시 애니메이션 (가속도 예측 보간) ----
 # OBD 새 값이 오면, 다음 값이 올 것으로 예상되는 시간(최근 수신 간격 평균) 동안

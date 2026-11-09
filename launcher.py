@@ -7,10 +7,11 @@
   1. 인터넷 연결 확인 (실제 소켓 연결 시도 - DNS 조회만으로는 신뢰 안 됨)
   2. 연결되면: 현재 코드 백업 -> git pull(이미 클론되어 있으면) 또는
      git clone(처음이면) -> 실패하면 백업으로 복구
-  3. main.py 실행 (연결 안 됐으면 백업/현재 코드 그대로 바로 실행)
+  3. 연결되면: 지난 실행 로그 중 안 올린 것을 GitHub 이슈 하나로 업로드 (log_uploader.py)
+  4. main.py 실행 (연결 안 됐으면 백업/현재 코드 그대로 바로 실행)
 
 화면 (B737 스타일 부팅 체크리스트):
-  NETWORK / BACKUP / UPDATE / LAUNCH 단계별 상태를 800x480 전체 화면에 표시하고,
+  NETWORK / BACKUP / UPDATE / LOGS / LAUNCH 단계별 상태를 800x480 전체 화면에 표시하고,
   끝나면 3초 카운트다운 후 화면을 닫고 main.py 를 실행합니다.
 
 구조 (부팅이 화면 문제로 막히지 않게):
@@ -42,7 +43,7 @@ GIT_TIMEOUT_SEC = 120
 LAUNCH_COUNTDOWN_SEC = 3
 UI_PROCESS_TIMEOUT_SEC = GIT_TIMEOUT_SEC + 180   # 화면 프로세스 전체 제한 (백업 복사 포함)
 
-STEP_NAMES = ("NETWORK", "BACKUP", "UPDATE", "LAUNCH")
+STEP_NAMES = ("NETWORK", "BACKUP", "UPDATE", "LOGS", "LAUNCH")
 
 
 # =====================================================================
@@ -155,6 +156,7 @@ def run_update(report):
         report("step", name="NETWORK", status="OFFLINE", level="warn")
         report("step", name="BACKUP", status="SKIP", level="skip")
         report("step", name="UPDATE", status="SKIP", level="skip")
+        report("step", name="LOGS", status="SKIP", level="skip")
         report("footer", text=f"{INTERNET_CHECK_HOST}:{INTERNET_CHECK_PORT} 연결 안 됨 - 기존 코드로 실행")
         report("banner", text="오프라인 - 기존 코드로 실행", level="warn")
         return
@@ -183,9 +185,11 @@ def run_update(report):
             count_text = f"  ({count} commits)" if count else ""
             report("step", name="UPDATE", status="UPDATED", level="ok",
                    detail=f"{head_text}{count_text}  {subject}")
+        upload_logs(report)
         report("banner", text="PFD 시작", level="ok")
         return
 
+    upload_logs(report)
     if backed_up and restore_backup():
         report("step", name="UPDATE", status="FAIL → RESTORED", level="warn", detail=error)
         report("footer", text=f"백업({BACKUP_DIR})으로 복구 완료")
@@ -193,6 +197,24 @@ def run_update(report):
     else:
         report("step", name="UPDATE", status="FAIL", level="warn", detail=error)
         report("banner", text="업데이트 실패 - 현재 코드로 실행", level="warn")
+
+
+def upload_logs(report):
+    """지난 실행 로그 중 안 올린 것을 GitHub 이슈 하나로 (온라인일 때만 호출됨).
+    실패해도 PFD 실행은 계속."""
+    report("step", name="LOGS", status="UPLOAD", level="active")
+    try:
+        if PROJECT_DIR not in sys.path:
+            sys.path.insert(0, PROJECT_DIR)
+        import log_uploader
+        status, detail = log_uploader.upload_pending_logs(check_internet=False, commit=_git_head())
+    except Exception as exc:
+        status, detail = "failed", f"{type(exc).__name__}: {exc}"
+    shown = {"uploaded": ("UPLOADED", "ok"), "none": ("NO NEW LOGS", "skip"),
+             "no_token": ("NO TOKEN", "skip"), "disabled": ("OFF", "skip"),
+             "offline": ("OFFLINE", "skip"), "failed": ("FAIL", "warn")}
+    text, level = shown.get(status, (status.upper(), "warn"))
+    report("step", name="LOGS", status=text, level=level, detail=detail if status != "none" else None)
 
 
 def run_main():
@@ -305,7 +327,7 @@ def run_ui() -> int:
             p.drawLine(QPointF(w / 2 - 250, 82), QPointF(w / 2 + 250, 82))
 
             left = w / 2 - 230
-            y = 120
+            y = 104
             for name in STEP_NAMES:
                 st = self.steps[name]
                 dim = st["level"] in ("idle", "skip")
@@ -326,14 +348,14 @@ def run_ui() -> int:
                     p.drawText(QRectF(left + 20, y + 26, w - left - 40, 18),
                                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                st["detail"])
-                    y += 18
-                y += 44
+                    y += 16
+                y += 40
 
             if self.banner:
                 text, level = self.banner
                 p.setFont(self._f_banner)
                 p.setPen(QPen(colors[level]))
-                p.drawText(QRectF(0, h - 110, w, 34), Qt.AlignmentFlag.AlignCenter, text)
+                p.drawText(QRectF(0, h - 92, w, 34), Qt.AlignmentFlag.AlignCenter, text)
 
             p.setPen(QPen(colors["border"], 1))
             p.drawLine(QPointF(0, h - 40), QPointF(w, h - 40))
