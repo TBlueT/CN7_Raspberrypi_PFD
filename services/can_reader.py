@@ -33,7 +33,7 @@ from bleak.exc import BleakError
 from PyQt6.QtCore import QThread, pyqtSignal
 
 import config
-from services.obd_decode import POLL_ITEMS, decode_item, parse_supported_pids
+from services.obd_decode import POLL_ITEMS, decode_item, incomplete_multiframe, parse_supported_pids
 
 # "41 0D XX" (표준 PID 0D 응답: 속도, km/h) 패턴. 사이사이 공백/개행/프롬프트(>) 섞여도 매칭되게 함.
 _SPEED_RESPONSE_PATTERN = re.compile(r"41\s*0D\s*([0-9A-Fa-f]{2})")
@@ -68,13 +68,13 @@ def new_sys_schedule():
             for name in POLL_ITEMS if name in config.OBD_SYS_INTERVALS}
 
 
-def pick_due(schedule: dict, now: float):
+def pick_due(schedule: dict, now: float, exclude=None):
     """요청할 때가 된 항목 중 '주기 대비' 가장 많이 밀린 것 (없으면 None).
     전부 밀려 있을 때(요청 처리량보다 요구량이 많을 때) 주기가 짧은 항목이 굶지 않고,
     모든 항목이 주기에 비례해서 고르게 느려지도록 함."""
     best, best_ratio = None, None
     for name, st in schedule.items():
-        if st["next"] > now:
+        if st["next"] > now or name == exclude:
             continue
         interval = config.OBD_SYS_UNSUPPORTED_RETRY_SEC if st["unsupported"] else config.OBD_SYS_INTERVALS[name]
         ratio = (now - st["next"]) / interval
@@ -129,6 +129,7 @@ class CanMonitorThread(QThread):
         self._diag_speed = 0
         self._diag_late = 0        # 제한시간 넘겨서 늦게 온 응답
         self._diag_noprompt = 0    # 끝내 프롬프트가 안 온 응답
+        self._diag_retry = 0       # 끊긴 긴 응답 재요청 수
         self._diag_last_time = 0.0
         self._sys_schedule = new_sys_schedule()
         # 어댑터 기능 (자동 판단, 안 되면 기존 방식)
@@ -199,6 +200,7 @@ class CanMonitorThread(QThread):
             await self._read_supported_pids(client)
             self.connection_error.emit(f"초기화 완료, 속도/RPM 폴링 시작 (헤더 {self._base_header})")
 
+            cycle = 0
             while self._running and client.is_connected:
                 await self._ensure_header(client, None, None)
                 text = await self._std_request(client, "010D", _SPEED_RESPONSE_PATTERN.search)
@@ -215,8 +217,14 @@ class CanMonitorThread(QThread):
                         self.rpm_updated.emit(rpm)
 
                 if config.OBD_SYS_ENABLED:
+                    cycle += 1
+                    fast = self._fast_item()
+                    if fast and cycle % config.OBD_FAST_EVERY_CYCLES == 0:
+                        st = self._sys_schedule[fast]
+                        if not st["unsupported"] or st["next"] <= time.monotonic():
+                            await self._poll_sys_item(client, fast)
                     for _ in range(config.OBD_SYS_ITEMS_PER_CYCLE):
-                        name = pick_due(self._sys_schedule, time.monotonic())
+                        name = pick_due(self._sys_schedule, time.monotonic(), exclude=fast)
                         if name is None:
                             break
                         await self._poll_sys_item(client, name)
@@ -253,20 +261,36 @@ class CanMonitorThread(QThread):
         self._header = header
         return True
 
+    def _fast_item(self):
+        """매 바퀴 요청 항목 (설정이 꺼져 있거나 목록에 없으면 None)"""
+        name = config.OBD_FAST_ITEM
+        if not config.OBD_FAST_EVERY_CYCLES or name not in self._sys_schedule:
+            return None
+        return name
+
     async def _init_flow_control(self, client: BleakClient):
-        """긴 응답(멀티프레임)을 받으려면 첫 프레임을 받은 뒤 '계속 보내라'(흐름 제어, 30 00 00)를
-        그 모듈 주소로 보내야 함. 자동 모드에선 엔진 외 모듈(7D1/7A0 등)에 주소가 안 맞을 수 있어서
-        헤더를 바꿀 때마다 같은 주소로 지정 (ATFCSH + ATFCSD300000 + ATFCSM1). 안 되면 자동 모드."""
+        """긴 응답(멀티프레임): 첫 프레임을 받은 어댑터가 ECU 에 '계속 보내라'(흐름 제어 30 BS STmin)를
+        보내면 ECU 가 나머지 프레임을 보냄. 기본은 STmin 0 (쉬지 않고 연달아) -> 어댑터가 놓쳐서 첫
+        프레임만 남는 것으로 보고 STmin(OBD_FC_STMIN_MS) 을 넣음.
+        1순위 ATFCSM2 (데이터만 지정, 주소는 자동) / 안 되면 ATFCSM1 + 헤더마다 ATFCSH / 안 되면 자동."""
         if not config.OBD_FLOW_CONTROL or not self._header_switch_ok:
             return
-        replies = [await self._request(client, cmd) for cmd in
-                   (f"ATFCSH{self._header}", "ATFCSD300000", "ATFCSM1")]
-        if any("?" in r for r in replies):
-            await self._request(client, "ATFCSM0")
-            self.connection_error.emit("흐름 제어 지정(ATFCSH/SD/SM1) 미지원 -> 자동 모드 유지")
-            return
-        self._fc_ok = True
-        self.connection_error.emit(f"흐름 제어 주소 지정 사용 (ATFCSM1, 현재 {self._header})")
+        stmin = max(0, min(0x7F, int(config.OBD_FC_STMIN_MS)))
+        data = f"3000{stmin:02X}"
+        r1 = await self._request(client, f"ATFCSD{data}")
+        if "?" not in r1:
+            r2 = await self._request(client, "ATFCSM2")
+            if "?" not in r2:
+                self.connection_error.emit(f"흐름 제어: {data[:2]} {data[2:4]} {data[4:]} (프레임 간격 {stmin}ms, ATFCSM2)")
+                return
+            r3 = await self._request(client, f"ATFCSH{self._header}")
+            r4 = await self._request(client, "ATFCSM1")
+            if "?" not in r3 and "?" not in r4:
+                self._fc_ok = True       # 헤더 바꿀 때마다 ATFCSH 도 같이
+                self.connection_error.emit(f"흐름 제어: 프레임 간격 {stmin}ms (ATFCSM1, 헤더마다 지정)")
+                return
+        await self._request(client, "ATFCSM0")
+        self.connection_error.emit("흐름 제어 지정 미지원 -> 자동 모드 유지")
 
     async def _apply_fixed_timing(self, client: BleakClient):
         """적응형 타이밍(ATAT1, 기본)은 빠른 엔진 응답에 맞춰 대기 시간을 줄여서, 느린 모듈의
@@ -369,6 +393,11 @@ class CanMonitorThread(QThread):
                                                lambda t: decode_item(name, t, command) is not None)
             else:
                 text = await self._request(client, command, config.OBD_MODE22_TIMEOUT_SEC)
+                retries = 0 if name == self._fast_item() else config.OBD_MODE22_RETRY
+                while retries > 0 and incomplete_multiframe(text):   # 중간에 끊긴 긴 응답 -> 바로 다시
+                    retries -= 1
+                    self._diag_retry += 1
+                    text = await self._request(client, command, config.OBD_MODE22_TIMEOUT_SEC)
             values = decode_item(name, text, command)
         else:
             text = "?"
@@ -421,7 +450,7 @@ class CanMonitorThread(QThread):
         if span < config.OBD_DIAG_INTERVAL_SEC:
             return
         parts = [f"속도 {self._diag_speed}회({span / max(1, self._diag_speed):.2f}s)",
-                 f"늦은응답 {self._diag_late}", f"무응답 {self._diag_noprompt}"]
+                 f"늦은응답 {self._diag_late}", f"무응답 {self._diag_noprompt}", f"재요청 {self._diag_retry}"]
         for name, st in self._sys_schedule.items():
             if st["total"] == 0:
                 parts.append(f"{name} -")
@@ -436,7 +465,7 @@ class CanMonitorThread(QThread):
             st["time_sum"] = 0.0
         self.connection_error.emit(f"{span:.0f}초 요약: " + " | ".join(parts))
         self._diag_start = now
-        self._diag_speed = self._diag_late = self._diag_noprompt = 0
+        self._diag_speed = self._diag_late = self._diag_noprompt = self._diag_retry = 0
 
     async def _send_at(self, client: BleakClient, command: str, wait_sec: float = 0.3):
         await client.write_gatt_char(self._tx_uuid, (command + "\r").encode("ascii"), response=True)

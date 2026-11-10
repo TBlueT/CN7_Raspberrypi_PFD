@@ -22,15 +22,13 @@ _LENGTH_LINE = re.compile(r"^[0-9A-F]{3}$")
 _FRAME_LINE = re.compile(r"^([0-9A-F]):\s*(.*)$")
 
 
-def parse_elm_response(text: str):
-    """ELM327 응답 텍스트를 데이터 바이트로 변환. 오류/빈 응답이면 None.
-    - 단일 프레임: "62 E0 01 .." 그대로
-    - 멀티 프레임(CAF 켜짐): "02C" (길이) 다음 "0: ..", "1: .." 줄들 -> 순서대로 이어붙이고 길이로 자름"""
+def _parse(text: str):
+    """ELM 응답 -> (데이터 바이트, 멀티프레임 길이 줄 값). 오류면 (None, None)"""
     if not text:
-        return None
+        return None, None
     upper = text.upper().replace(">", "")
     if any(word in upper for word in _ERROR_WORDS):
-        return None
+        return None, None
     length = None
     frames = {}
     plain = []
@@ -46,16 +44,29 @@ def parse_elm_response(text: str):
             frames[int(m.group(1), 16)] = m.group(2)
         else:
             plain.append(line)
-    if frames:
-        hex_text = "".join(frames[i] for i in sorted(frames))
-    else:
-        hex_text = "".join(plain)
+    hex_text = "".join(frames[i] for i in sorted(frames)) if frames else "".join(plain)
     hex_text = re.sub(r"[^0-9A-F]", "", hex_text)
     if len(hex_text) < 2:
+        return None, length
+    return bytes.fromhex(hex_text[: len(hex_text) // 2 * 2]), length
+
+
+def incomplete_multiframe(text: str) -> bool:
+    """멀티프레임 응답이 중간에 끊겼는지 (길이 줄보다 데이터가 짧음) - 재요청 판단용"""
+    data, length = _parse(text)
+    return length is not None and (data is None or len(data) < length)
+
+
+def parse_elm_response(text: str):
+    """ELM327 응답 텍스트를 데이터 바이트로 변환. 오류/빈 응답이면 None.
+    - 단일 프레임: "62 E0 01 .." 그대로
+    - 멀티 프레임(CAF 켜짐): "02C" (길이) 다음 "0: ..", "1: .." 줄들 -> 순서대로 이어붙이고 길이로 자름.
+      일부가 빠졌으면(길이보다 짧음) None - 잘린 값으로 해석하지 않음"""
+    data, length = _parse(text)
+    if data is None:
         return None
-    data = bytes.fromhex(hex_text[: len(hex_text) // 2 * 2])
     if length is not None:
-        if len(data) < length:      # 멀티프레임 일부가 빠짐 -> 잘린 값으로 해석하지 않음
+        if len(data) < length:
             return None
         data = data[:length]
     return data
@@ -108,8 +119,9 @@ def decode(payload, bix, length, mul=1.0, div=1.0, add=0.0, signed=False, little
 # ---------------------------------------------------------------------------
 
 def _steer_brake(p):
+    steer = decode(p, 200, 16, div=10, signed=True, vmin=-3276.8, vmax=3276.7)
     return {
-        "steer_deg": decode(p, 200, 16, div=10, signed=True, vmin=-3276.8, vmax=3276.7),
+        "steer_deg": None if steer is None else steer * config.SYS_STEER_SIGN,   # 실차 부호 맞춤
         "brake_pct": decode(p, 256, 16, div=86.7, signed=True, vmax=100),
     }
 

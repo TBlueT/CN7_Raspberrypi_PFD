@@ -74,6 +74,7 @@ SYS_COOLANT_RANGE_C = (40, 130)
 SYS_OIL_RANGE_C = (40, 150)
 SYS_FUEL_TANK_L = 47.0        # 연료 막대 최대 (CN7 탱크 47 L)
 SYS_STEER_RANGE_DEG = 540     # 조향각 눈금 좌우 범위
+SYS_STEER_SIGN = -1           # 조향각 부호 (실차: OBDb 값이 화면과 반대 -> -1. 다시 반대면 1)
 # 앞문 잠금 비트 값 (OBDb: 1 = 잠김. 실차에서 반대로 나오면 0 으로)
 SYS_DOOR_LOCKED_BIT = 1
 
@@ -95,6 +96,10 @@ OBD_POLL_INTERVAL_SEC = 0.1       # 한 바퀴(속도+RPM) 요청 후 쉬는 시
 # OBD_SYS_ITEMS_PER_CYCLE 개씩 끼워서 요청. 제조사 명령(Mode 22)은 헤더 전환이 필요해서 느림)
 OBD_SYS_ENABLED = True
 OBD_SYS_ITEMS_PER_CYCLE = 1
+# 매 바퀴 요청 항목: 속도+RPM 과 함께 OBD_FAST_EVERY_CYCLES 바퀴마다 항상 요청 (위 1개와 별도)
+# 조향각/브레이크를 빠르게 갱신하려고 사용. 속도 갱신은 그만큼 느려짐 (0 이면 끔, 2 면 두 바퀴에 한 번)
+OBD_FAST_ITEM = "steer_brake"
+OBD_FAST_EVERY_CYCLES = 1
 # 속도/RPM/표준 PID 를 보낼 헤더. "7E0" = 엔진 ECU 에 직접 (엔진오일 온도와 같은 헤더라
 # 전환이 줄어듦). 어댑터가 헤더 지정을 거부하면 자동으로 "7DF"(기존 방식)로 돌아감
 OBD_BASE_HEADER = "7E0"
@@ -123,9 +128,14 @@ OBD_DIAG_INTERVAL_SEC = 30.0      # 이 주기로 OBD 요약 로그 ([CAN] 30초
 OBD_USE_RESPONSE_COUNT = True     # 표준 PID 끝에 응답 개수 '1' 을 붙여 응답 하나 받으면 바로 끝냄 (010D1)
 OBD_USE_ATRV = True               # 배터리 전압을 ATRV(어댑터가 OBD 포트 전압 직접 측정)로 읽음
 # 긴 응답(멀티프레임)이 첫 프레임만 오고 끊기는 문제 대응 (실차 2026-11-09: 조향각/타이어/오일)
-OBD_FIXED_TIMING = True           # ATAT0: 적응형 타이밍 끄고 ATST 로 대기 시간 고정
-OBD_ELM_TIMEOUT_MS = 200          # ATST 값 (ms, 4ms 단위). 응답 개수 지정이 될 때만 적용 (속도 요청은 안 느려짐)
-OBD_FLOW_CONTROL = True           # 헤더 바꿀 때 흐름 제어 주소도 지정 (ATFCSH/ATFCSD/ATFCSM1)
+# - 실차 2026-11-10: 길수록 잘 끊김 (문잠금/연료 100%, 조향각 44바이트 ~50%, 오일 95바이트 0%)
+#   -> ECU 가 나머지 프레임을 쉬지 않고 보내면 어댑터가 놓치는 것으로 보고, 흐름 제어에 프레임 간격(STmin) 지정
+OBD_FLOW_CONTROL = True           # 흐름 제어 데이터를 30 00 <STmin> 으로 (ATFCSD + ATFCSM2, 주소는 자동)
+OBD_FC_STMIN_MS = 10              # 연속 프레임 사이 최소 간격 (ms, 0~127). 계속 끊기면 20~30 으로
+OBD_MODE22_RETRY = 1              # 긴 응답이 중간에 끊기면 바로 다시 요청하는 횟수 (매 바퀴 요청 항목은 제외)
+# 적응형 타이밍 끄기(ATAT0 + ATST): 실차에서 끊김 개선 효과가 없고 제조사 명령마다 0.15초씩 느려져서 끔
+OBD_FIXED_TIMING = False
+OBD_ELM_TIMEOUT_MS = 200          # 위를 켤 때 ATST 값 (ms)
 
 # ---- 실행 로그 저장 + GitHub 이슈 자동 업로드 (log_uploader.py) ----
 # 콘솔 로그를 실행마다 파일로 저장하고, 인터넷이 될 때만 안 올린 로그를 새 이슈 하나로 올림
