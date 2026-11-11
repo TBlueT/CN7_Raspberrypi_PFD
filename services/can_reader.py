@@ -83,12 +83,17 @@ def pick_due(schedule: dict, now: float, exclude=None):
     return best
 
 
-def update_after_poll(schedule: dict, name: str, ok: bool, now: float):
+def update_after_poll(schedule: dict, name: str, ok: bool, now: float, transient: bool = False):
     """요청 결과 반영 -> 다음 요청 시각. 미지원으로 막 바뀌었으면 True 반환 (로그용).
     한 번이라도 응답한 항목은 실패해도 일시적인 것으로 보고 원래 주기로 계속 요청
     (예전에는 3번 연속 실패면 60초 쉬어서 '들어오다 끊기는' 원인이 됐음)."""
     st = schedule[name]
     newly_unsupported = False
+    if not ok and transient:
+        # 긴 응답이 중간에 끊긴 것 = 차는 이 명령을 지원함 (전송만 실패) -> 미지원 판정에 안 셈
+        # (실차 2026-11-10: 조향각이 처음 3번 끊겨서 미지원 처리 -> 60초 동안 안 받던 문제)
+        st["next"] = now + config.OBD_SYS_INTERVALS[name]
+        return False
     if ok:
         st["fails"] = 0
         st["unsupported"] = False
@@ -194,6 +199,9 @@ class CanMonitorThread(QThread):
             info = (await self._request(client, "ATI")).replace("\r", " ").replace(">", "").strip()
             self.connection_error.emit(f"어댑터 정보(ATI): {info!r}")
             await self._probe_atrv(client)
+            if config.OBD_COMPACT_OUTPUT:
+                reply = await self._request(client, "ATS0")
+                self.connection_error.emit("응답 공백 제거(ATS0) " + ("미지원" if "?" in reply else "사용"))
             await self._init_flow_control(client)
             # 응답 개수 지정 확인 (되면 그 자리에서 타이밍 고정) + 지원 PID 확인
             await self._std_request(client, "010D", _SPEED_RESPONSE_PATTERN.search)
@@ -270,27 +278,21 @@ class CanMonitorThread(QThread):
 
     async def _init_flow_control(self, client: BleakClient):
         """긴 응답(멀티프레임): 첫 프레임을 받은 어댑터가 ECU 에 '계속 보내라'(흐름 제어 30 BS STmin)를
-        보내면 ECU 가 나머지 프레임을 보냄. 기본은 STmin 0 (쉬지 않고 연달아) -> 어댑터가 놓쳐서 첫
-        프레임만 남는 것으로 보고 STmin(OBD_FC_STMIN_MS) 을 넣음.
-        1순위 ATFCSM2 (데이터만 지정, 주소는 자동) / 안 되면 ATFCSM1 + 헤더마다 ATFCSH / 안 되면 자동."""
+        보내면 ECU 가 나머지 프레임을 보냄. OBD_FLOW_CONTROL 이면 STmin 을 넣어 천천히 보내게 함
+        (ATFCSD + ATFCSM1, 헤더 바꿀 때마다 ATFCSH). 기본은 끔(어댑터 자동).
+        ATFCSM2(주소 자동)는 실차에서 문잠금/연료까지 NO DATA 가 돼서 쓰지 않음."""
         if not config.OBD_FLOW_CONTROL or not self._header_switch_ok:
             return
         stmin = max(0, min(0x7F, int(config.OBD_FC_STMIN_MS)))
         data = f"3000{stmin:02X}"
-        r1 = await self._request(client, f"ATFCSD{data}")
-        if "?" not in r1:
-            r2 = await self._request(client, "ATFCSM2")
-            if "?" not in r2:
-                self.connection_error.emit(f"흐름 제어: {data[:2]} {data[2:4]} {data[4:]} (프레임 간격 {stmin}ms, ATFCSM2)")
-                return
-            r3 = await self._request(client, f"ATFCSH{self._header}")
-            r4 = await self._request(client, "ATFCSM1")
-            if "?" not in r3 and "?" not in r4:
-                self._fc_ok = True       # 헤더 바꿀 때마다 ATFCSH 도 같이
-                self.connection_error.emit(f"흐름 제어: 프레임 간격 {stmin}ms (ATFCSM1, 헤더마다 지정)")
-                return
-        await self._request(client, "ATFCSM0")
-        self.connection_error.emit("흐름 제어 지정 미지원 -> 자동 모드 유지")
+        replies = [await self._request(client, cmd) for cmd in
+                   (f"ATFCSH{self._header}", f"ATFCSD{data}", "ATFCSM1")]
+        if any("?" in r for r in replies):
+            await self._request(client, "ATFCSM0")
+            self.connection_error.emit("흐름 제어 지정 미지원 -> 자동 모드 유지")
+            return
+        self._fc_ok = True       # 헤더 바꿀 때마다 ATFCSH 도 같이
+        self.connection_error.emit(f"흐름 제어: 30 00 {stmin:02X} (프레임 간격 {stmin}ms, ATFCSM1, 헤더마다 지정)")
 
     async def _apply_fixed_timing(self, client: BleakClient):
         """적응형 타이밍(ATAT1, 기본)은 빠른 엔진 응답에 맞춰 대기 시간을 줄여서, 느린 모듈의
@@ -399,6 +401,10 @@ class CanMonitorThread(QThread):
                     self._diag_retry += 1
                     text = await self._request(client, command, config.OBD_MODE22_TIMEOUT_SEC)
             values = decode_item(name, text, command)
+            if values is None and incomplete_multiframe(text) and config.OBD_SETTLE_AFTER_CUT_SEC:
+                # 끊긴 응답의 나머지가 늦게 와서 다음 요청 응답에 섞이지 않게 잠깐 기다렸다가 버림
+                await asyncio.sleep(config.OBD_SETTLE_AFTER_CUT_SEC)
+                self._rx_buffer = b""
         else:
             text = "?"
             values = None
@@ -414,7 +420,8 @@ class CanMonitorThread(QThread):
                 self._fail_logged.add(name)
                 self.connection_error.emit(
                     f"{name}({header or self._base_header} {command}) 첫 실패 응답 전체: {text.strip()[:300]!r}")
-        if update_after_poll(self._sys_schedule, name, values is not None, time.monotonic()):
+        transient = values is None and incomplete_multiframe(text)
+        if update_after_poll(self._sys_schedule, name, values is not None, time.monotonic(), transient):
             self.connection_error.emit(
                 f"{name}({header or self._base_header} {command}) 응답 없음 -> 미지원으로 보고 "
                 f"{config.OBD_SYS_UNSUPPORTED_RETRY_SEC:.0f}초마다 재시도")

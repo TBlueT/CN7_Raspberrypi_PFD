@@ -128,11 +128,14 @@ OBD_DIAG_INTERVAL_SEC = 30.0      # 이 주기로 OBD 요약 로그 ([CAN] 30초
 OBD_USE_RESPONSE_COUNT = True     # 표준 PID 끝에 응답 개수 '1' 을 붙여 응답 하나 받으면 바로 끝냄 (010D1)
 OBD_USE_ATRV = True               # 배터리 전압을 ATRV(어댑터가 OBD 포트 전압 직접 측정)로 읽음
 # 긴 응답(멀티프레임)이 첫 프레임만 오고 끊기는 문제 대응 (실차 2026-11-09: 조향각/타이어/오일)
-# - 실차 2026-11-10: 길수록 잘 끊김 (문잠금/연료 100%, 조향각 44바이트 ~50%, 오일 95바이트 0%)
-#   -> ECU 가 나머지 프레임을 쉬지 않고 보내면 어댑터가 놓치는 것으로 보고, 흐름 제어에 프레임 간격(STmin) 지정
-OBD_FLOW_CONTROL = True           # 흐름 제어 데이터를 30 00 <STmin> 으로 (ATFCSD + ATFCSM2, 주소는 자동)
-OBD_FC_STMIN_MS = 10              # 연속 프레임 사이 최소 간격 (ms, 0~127). 계속 끊기면 20~30 으로
-OBD_MODE22_RETRY = 1              # 긴 응답이 중간에 끊기면 바로 다시 요청하는 횟수 (매 바퀴 요청 항목은 제외)
+# - 실차 기록: 응답이 길수록 중간이 빠지고 끝('>')만 옴 (문잠금/연료 100%, 조향각 44바이트 ~50%,
+#   오일 95바이트 0%). 어댑터의 블루투스 쪽이 긴 출력을 다 못 넘기는 것으로 보임
+# - 흐름 제어에 프레임 간격(ATFCSM2 + STmin 10ms, 2026-11-10 시험)은 오히려 문잠금/연료까지 NO DATA 가 돼서 끔
+OBD_FLOW_CONTROL = False          # True: 흐름 제어 30 00 <STmin> 지정 (ATFCSD + ATFCSM1 + 헤더마다 ATFCSH)
+OBD_FC_STMIN_MS = 10              # 위를 켤 때 연속 프레임 사이 최소 간격 (ms, 0~127)
+OBD_COMPACT_OUTPUT = True         # ATS0: 응답에서 공백 빼기 -> 출력 글자 수 약 30% 감소 (블루투스로 넘길 양 줄임)
+OBD_MODE22_RETRY = 0              # 긴 응답이 끊겼을 때 바로 재요청 횟수 (시험 결과 끝부분만 와서 0)
+OBD_SETTLE_AFTER_CUT_SEC = 0.2    # 긴 응답이 끊기면 이만큼 기다렸다가 늦게 온 나머지를 버림 (다음 요청 오염 방지)
 # 적응형 타이밍 끄기(ATAT0 + ATST): 실차에서 끊김 개선 효과가 없고 제조사 명령마다 0.15초씩 느려져서 끔
 OBD_FIXED_TIMING = False
 OBD_ELM_TIMEOUT_MS = 200          # 위를 켤 때 ATST 값 (ms)
