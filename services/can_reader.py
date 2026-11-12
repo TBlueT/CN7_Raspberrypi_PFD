@@ -74,7 +74,7 @@ def pick_due(schedule: dict, now: float, exclude=None):
     모든 항목이 주기에 비례해서 고르게 느려지도록 함."""
     best, best_ratio = None, None
     for name, st in schedule.items():
-        if st["next"] > now or name == exclude:
+        if st["next"] > now or (exclude and name in exclude):
             continue
         interval = config.OBD_SYS_UNSUPPORTED_RETRY_SEC if st["unsupported"] else config.OBD_SYS_INTERVALS[name]
         ratio = (now - st["next"]) / interval
@@ -142,6 +142,7 @@ class CanMonitorThread(QThread):
         self._atrv_ok = None        # ATRV(어댑터가 직접 재는 배터리 전압) 지원 여부
         self._atrv_fails = 0
         self._fc_ok = False         # 흐름 제어 주소 지정(ATFCSH) 사용 중
+        self._wide_filter = False   # 응답 필터 7xx 전체 (헤더 바꿀 때 ATCRA 생략)
         self._item_cmd = {}         # 항목 -> 대안 명령 (예: 냉각수 0105 미지원 -> 0167)
         self._fail_logged = set()   # 실패 응답 전체를 로그로 남긴 항목 (실행당 한 번)
 
@@ -199,6 +200,7 @@ class CanMonitorThread(QThread):
             info = (await self._request(client, "ATI")).replace("\r", " ").replace(">", "").strip()
             self.connection_error.emit(f"어댑터 정보(ATI): {info!r}")
             await self._probe_atrv(client)
+            await self._init_wide_filter(client)
             if config.OBD_COMPACT_OUTPUT:
                 reply = await self._request(client, "ATS0")
                 self.connection_error.emit("응답 공백 제거(ATS0) " + ("미지원" if "?" in reply else "사용"))
@@ -206,6 +208,7 @@ class CanMonitorThread(QThread):
             # 응답 개수 지정 확인 (되면 그 자리에서 타이밍 고정) + 지원 PID 확인
             await self._std_request(client, "010D", _SPEED_RESPONSE_PATTERN.search)
             await self._read_supported_pids(client)
+            await self._run_startup_probes(client)
             self.connection_error.emit(f"초기화 완료, 속도/RPM 폴링 시작 (헤더 {self._base_header})")
 
             cycle = 0
@@ -226,16 +229,7 @@ class CanMonitorThread(QThread):
 
                 if config.OBD_SYS_ENABLED:
                     cycle += 1
-                    fast = self._fast_item()
-                    if fast and cycle % config.OBD_FAST_EVERY_CYCLES == 0:
-                        st = self._sys_schedule[fast]
-                        if not st["unsupported"] or st["next"] <= time.monotonic():
-                            await self._poll_sys_item(client, fast)
-                    for _ in range(config.OBD_SYS_ITEMS_PER_CYCLE):
-                        name = pick_due(self._sys_schedule, time.monotonic(), exclude=fast)
-                        if name is None:
-                            break
-                        await self._poll_sys_item(client, name)
+                    await self._poll_cycle_items(client, cycle)
 
                 self._maybe_log_diag()
                 await asyncio.sleep(config.OBD_POLL_INTERVAL_SEC)
@@ -263,18 +257,69 @@ class CanMonitorThread(QThread):
         reply = await self._request(client, f"ATSH{header}")
         if "?" in reply:
             return False
-        await self._request(client, f"ATCRA{rx_header}" if rx_header else "ATCRA")
+        if not self._wide_filter:
+            await self._request(client, f"ATCRA{rx_header}" if rx_header else "ATCRA")
         if self._fc_ok:
             await self._request(client, f"ATFCSH{header}")
         self._header = header
         return True
 
-    def _fast_item(self):
-        """매 바퀴 요청 항목 (설정이 꺼져 있거나 목록에 없으면 None)"""
-        name = config.OBD_FAST_ITEM
-        if not config.OBD_FAST_EVERY_CYCLES or name not in self._sys_schedule:
-            return None
-        return name
+    async def _init_wide_filter(self, client: BleakClient):
+        """응답 필터를 7xx 전체로 (ATCF700 + ATCM700: 위 3비트만 7 이면 통과). 물리 주소로 묻기 때문에
+        답하는 건 그 모듈뿐이라 안전하고, 헤더를 바꿀 때 ATCRA 를 생략할 수 있음."""
+        if not config.OBD_WIDE_RX_FILTER or not self._header_switch_ok or self._base_header == _DEFAULT_HEADER:
+            return
+        r1 = await self._request(client, "ATCF700")
+        r2 = await self._request(client, "ATCM700")
+        if "?" in r1 or "?" in r2:
+            await self._request(client, f"ATCRA{_response_header(self._base_header)}")
+            self.connection_error.emit("응답 필터 7xx(ATCF/ATCM) 미지원 -> 헤더마다 ATCRA")
+            return
+        self._wide_filter = True
+        self.connection_error.emit("응답 필터 7xx 전체 (ATCF700 + ATCM700) -> 헤더 전환 시 ATCRA 생략")
+
+    async def _run_startup_probes(self, client: BleakClient):
+        """확인용 요청을 한 번씩 보내 응답을 로그로 남김 (대체 명령 찾기용, 화면에는 안 씀)"""
+        if not self._header_switch_ok:
+            return
+        for header, command in config.OBD_STARTUP_PROBES:
+            if not await self._ensure_header(client, header, _response_header(header)):
+                continue
+            text = await self._request(client, command, config.OBD_MODE22_TIMEOUT_SEC)
+            self.connection_error.emit(f"확인용 요청 {header} {command} 응답: {text.strip()[:300]!r}")
+        await self._ensure_header(client, None, None)
+
+    def _fast_items(self):
+        """매 바퀴 요청 항목들 (설정이 꺼져 있으면 빈 목록)"""
+        if not config.OBD_FAST_EVERY_CYCLES:
+            return []
+        return [n for n in config.OBD_FAST_ITEMS if n in self._sys_schedule]
+
+    def _uses_base_header(self, name):
+        header = POLL_ITEMS[name][0]
+        return header is None or header == self._base_header or (name == "batt" and self._atrv_ok)
+
+    async def _poll_cycle_items(self, client: BleakClient, cycle: int):
+        """한 바퀴 항목 요청. 헤더 전환을 줄이도록 기본 헤더(엔진 ECU) 항목을 먼저 하고
+        다른 모듈 항목은 뒤로: [기본 헤더 빠른 항목, 기본 헤더 일반 항목] -> [다른 헤더 빠른/일반 항목]"""
+        now = time.monotonic()
+        fast = []
+        if self._fast_items() and cycle % config.OBD_FAST_EVERY_CYCLES == 0:
+            for name in self._fast_items():
+                st = self._sys_schedule[name]
+                if not st["unsupported"] or st["next"] <= now:
+                    fast.append(name)
+        normal = []
+        for _ in range(config.OBD_SYS_ITEMS_PER_CYCLE):
+            name = pick_due(self._sys_schedule, now, exclude=set(self._fast_items()) | set(normal))
+            if name is None:
+                break
+            normal.append(name)
+        order = ([n for n in fast + normal if self._uses_base_header(n)]
+                 + [n for n in fast if not self._uses_base_header(n)]
+                 + [n for n in normal if not self._uses_base_header(n)])
+        for name in order:
+            await self._poll_sys_item(client, name)
 
     async def _init_flow_control(self, client: BleakClient):
         """긴 응답(멀티프레임): 첫 프레임을 받은 어댑터가 ECU 에 '계속 보내라'(흐름 제어 30 BS STmin)를
@@ -395,7 +440,7 @@ class CanMonitorThread(QThread):
                                                lambda t: decode_item(name, t, command) is not None)
             else:
                 text = await self._request(client, command, config.OBD_MODE22_TIMEOUT_SEC)
-                retries = 0 if name == self._fast_item() else config.OBD_MODE22_RETRY
+                retries = 0 if name in self._fast_items() else config.OBD_MODE22_RETRY
                 while retries > 0 and incomplete_multiframe(text):   # 중간에 끊긴 긴 응답 -> 바로 다시
                     retries -= 1
                     self._diag_retry += 1

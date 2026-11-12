@@ -76,7 +76,7 @@ SYS_FUEL_TANK_L = 47.0        # 연료 막대 최대 (CN7 탱크 47 L)
 SYS_STEER_RANGE_DEG = 540     # 조향각 눈금 좌우 범위
 SYS_STEER_SIGN = -1           # 조향각 부호 (실차: OBDb 값이 화면과 반대 -> -1. 다시 반대면 1)
 # 앞문 잠금 비트 값 (OBDb: 1 = 잠김. 실차에서 반대로 나오면 0 으로)
-SYS_DOOR_LOCKED_BIT = 1
+SYS_DOOR_LOCKED_BIT = 0       # 실차(2026-11-12): 1 일 때 잠금/해제가 반대로 표시됨 -> 0
 
 
 # ---- EBIMU-9DOFV5-R3 시리얼 설정 ----
@@ -90,16 +90,23 @@ IMU_RECONNECT_INTERVAL_SEC = 1.0   # 부팅 직후 USB 인식 전일 수 있으�
 OBD_RECONNECT_INTERVAL_SEC = 0.1
 OBD_POLL_RPM = True               # 속도(010D) 다음에 엔진 RPM(010C)도 요청
 OBD_RESPONSE_TIMEOUT_SEC = 0.4    # 응답 끝 프롬프트('>')를 기다리는 최대 시간 (이전 고정 대기와 같음)
-OBD_POLL_INTERVAL_SEC = 0.1       # 한 바퀴(속도+RPM) 요청 후 쉬는 시간
+OBD_POLL_INTERVAL_SEC = 0.02      # 한 바퀴 끝 쉬는 시간 (응답 끝 '>' 를 기다리므로 길 필요 없음, 예전 0.1)
 
 # 차량 시스템 화면 데이터 (속도+RPM 한 바퀴마다 아래 중 주기가 된 항목을 최대
 # OBD_SYS_ITEMS_PER_CYCLE 개씩 끼워서 요청. 제조사 명령(Mode 22)은 헤더 전환이 필요해서 느림)
 OBD_SYS_ENABLED = True
 OBD_SYS_ITEMS_PER_CYCLE = 1
 # 매 바퀴 요청 항목: 속도+RPM 과 함께 OBD_FAST_EVERY_CYCLES 바퀴마다 항상 요청 (위 1개와 별도)
-# 조향각/브레이크를 빠르게 갱신하려고 사용. 속도 갱신은 그만큼 느려짐 (0 이면 끔, 2 면 두 바퀴에 한 번)
-OBD_FAST_ITEM = "steer_brake"
+# 엔진 부하(헤더 전환 없음)를 먼저, 조향각/브레이크(7D1)를 나중에. 속도 갱신은 그만큼 느려짐
+# (0 이면 끔, 2 면 두 바퀴에 한 번)
+OBD_FAST_ITEMS = ["load", "steer_brake"]
 OBD_FAST_EVERY_CYCLES = 1
+# 응답 필터를 7xx 전체로 한 번만 지정(ATCF700 + ATCM700) -> 헤더 바꿀 때 ATCRA 를 안 보내도 돼서
+# 전환 명령이 절반으로 줄어듦 (매 바퀴 7E0 <-> 7D1 왕복). 어댑터가 거부하면 기존처럼 ATCRA
+OBD_WIDE_RX_FILTER = True
+# 시작할 때 한 번만 보내서 응답을 로그로 남기는 확인용 요청 (헤더, 명령)
+# 7D4 21 01 = 전동 조향(MDPS) 조향각 (OBDb, CN7 미검증) - 7D1 응답(44바이트)보다 짧으면 대체 후보
+OBD_STARTUP_PROBES = [("7D4", "2101")]
 # 속도/RPM/표준 PID 를 보낼 헤더. "7E0" = 엔진 ECU 에 직접 (엔진오일 온도와 같은 헤더라
 # 전환이 줄어듦). 어댑터가 헤더 지정을 거부하면 자동으로 "7DF"(기존 방식)로 돌아감
 OBD_BASE_HEADER = "7E0"
@@ -135,7 +142,7 @@ OBD_FLOW_CONTROL = False          # True: 흐름 제어 30 00 <STmin> 지정 (AT
 OBD_FC_STMIN_MS = 10              # 위를 켤 때 연속 프레임 사이 최소 간격 (ms, 0~127)
 OBD_COMPACT_OUTPUT = True         # ATS0: 응답에서 공백 빼기 -> 출력 글자 수 약 30% 감소 (블루투스로 넘길 양 줄임)
 OBD_MODE22_RETRY = 0              # 긴 응답이 끊겼을 때 바로 재요청 횟수 (시험 결과 끝부분만 와서 0)
-OBD_SETTLE_AFTER_CUT_SEC = 0.2    # 긴 응답이 끊기면 이만큼 기다렸다가 늦게 온 나머지를 버림 (다음 요청 오염 방지)
+OBD_SETTLE_AFTER_CUT_SEC = 0.05   # 긴 응답이 끊기면 이만큼 기다렸다가 늦게 온 나머지를 버림 (실차에서 섞임 없어 짧게)
 # 적응형 타이밍 끄기(ATAT0 + ATST): 실차에서 끊김 개선 효과가 없고 제조사 명령마다 0.15초씩 느려져서 끔
 OBD_FIXED_TIMING = False
 OBD_ELM_TIMEOUT_MS = 200          # 위를 켤 때 ATST 값 (ms)
