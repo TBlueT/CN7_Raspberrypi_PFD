@@ -148,6 +148,8 @@ OBD_FC_STMIN_MS = 10              # 위를 켤 때 연속 프레임 사이 최�
 OBD_COMPACT_OUTPUT = True         # ATS0: 응답에서 공백 빼기 -> 출력 글자 수 약 30% 감소 (블루투스로 넘길 양 줄임)
 OBD_MODE22_RETRY = 0              # 긴 응답이 끊겼을 때 바로 재요청 횟수 (시험 결과 끝부분만 와서 0)
 OBD_SETTLE_AFTER_CUT_SEC = 0.05   # 긴 응답이 끊기면 이만큼 기다렸다가 늦게 온 나머지를 버림 (실차에서 섞임 없어 짧게)
+OBD_ACCEPT_PARTIAL_REPLY = True   # 긴 응답이 끊겨도 0번부터 빠짐없이 온 앞부분에 필요한 값이 있으면 사용
+                                  # (엔진오일: 95바이트 응답 중 앞 38바이트에 있음 - 어댑터는 62바이트에서 끊김)
 # 적응형 타이밍 끄기(ATAT0 + ATST): 실차에서 끊김 개선 효과가 없고 제조사 명령마다 0.15초씩 느려져서 끔
 OBD_FIXED_TIMING = False
 OBD_ELM_TIMEOUT_MS = 200          # 위를 켤 때 ATST 값 (ms)

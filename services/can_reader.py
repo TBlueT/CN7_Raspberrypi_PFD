@@ -62,9 +62,9 @@ def _response_header(header: str):
 
 def new_sys_schedule():
     """항목별 폴링 상태: 다음 요청 시각, 연속 실패 수, 미지원 여부, 한 번이라도 성공했는지
-    + 진단 통계(ok/total/응답시간 합/마지막 실패 응답)"""
+    + 진단 통계(ok/끊긴 응답 앞부분으로 성공/total/응답시간 합/마지막 실패 응답)"""
     return {name: {"next": 0.0, "fails": 0, "unsupported": False, "ever_ok": False,
-                   "ok": 0, "total": 0, "time_sum": 0.0, "last_fail": ""}
+                   "ok": 0, "partial": 0, "total": 0, "time_sum": 0.0, "last_fail": ""}
             for name in POLL_ITEMS if name in config.OBD_SYS_INTERVALS}
 
 
@@ -145,6 +145,7 @@ class CanMonitorThread(QThread):
         self._wide_filter = False   # 응답 필터 7xx 전체 (헤더 바꿀 때 ATCRA 생략)
         self._item_cmd = {}         # 항목 -> 대안 명령 (예: 냉각수 0105 미지원 -> 0167)
         self._fail_logged = set()   # 실패 응답 전체를 로그로 남긴 항목 (실행당 한 번)
+        self._partial_logged = set()  # 끊긴 응답 앞부분으로 처음 읽었을 때 로그 남긴 항목 (실행당 한 번)
 
     def run(self):
         self._running = True
@@ -441,12 +442,13 @@ class CanMonitorThread(QThread):
             else:
                 text = await self._request(client, command, config.OBD_MODE22_TIMEOUT_SEC)
                 retries = 0 if name in self._fast_items() else config.OBD_MODE22_RETRY
-                while retries > 0 and incomplete_multiframe(text):   # 중간에 끊긴 긴 응답 -> 바로 다시
+                while (retries > 0 and incomplete_multiframe(text)    # 중간에 끊겨서 값을 못 읽음 -> 바로 다시
+                       and decode_item(name, text, command) is None):
                     retries -= 1
                     self._diag_retry += 1
                     text = await self._request(client, command, config.OBD_MODE22_TIMEOUT_SEC)
             values = decode_item(name, text, command)
-            if values is None and incomplete_multiframe(text) and config.OBD_SETTLE_AFTER_CUT_SEC:
+            if incomplete_multiframe(text) and config.OBD_SETTLE_AFTER_CUT_SEC:
                 # 끊긴 응답의 나머지가 늦게 와서 다음 요청 응답에 섞이지 않게 잠깐 기다렸다가 버림
                 await asyncio.sleep(config.OBD_SETTLE_AFTER_CUT_SEC)
                 self._rx_buffer = b""
@@ -458,6 +460,13 @@ class CanMonitorThread(QThread):
         st["time_sum"] += self._diag_last_time
         if values is not None:
             st["ok"] += 1
+            if incomplete_multiframe(text):           # 끊긴 응답의 앞부분으로 읽음
+                st["partial"] += 1
+                if name not in self._partial_logged:
+                    self._partial_logged.add(name)
+                    self.connection_error.emit(
+                        f"{name}({header or self._base_header} {command}) 끊긴 응답 앞부분으로 값 읽음: "
+                        f"{values} / 응답 {text.strip()[:300]!r}")
             self.sys_values_updated.emit(name, values)
         else:
             st["last_fail"] = text.strip().replace("\r", " ")[:40]
@@ -508,12 +517,14 @@ class CanMonitorThread(QThread):
                 parts.append(f"{name} -")
                 continue
             item = f"{name} {st['ok']}/{st['total']} {st['time_sum'] / st['total']:.2f}s"
+            if st["partial"]:
+                item += f" (앞부분 {st['partial']})"
             if st["ok"] < st["total"]:
                 item += f" 실패응답={st['last_fail']!r}"
             if st["unsupported"]:
                 item += " (미지원)"
             parts.append(item)
-            st["ok"] = st["total"] = 0
+            st["ok"] = st["partial"] = st["total"] = 0
             st["time_sum"] = 0.0
         self.connection_error.emit(f"{span:.0f}초 요약: " + " | ".join(parts))
         self._diag_start = now

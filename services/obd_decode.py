@@ -22,15 +22,22 @@ _LENGTH_LINE = re.compile(r"^[0-9A-F]{3}$")
 _FRAME_LINE = re.compile(r"^([0-9A-F]):\s*(.*)$")
 
 
+def _clean_hex(text: str) -> str:
+    return re.sub(r"[^0-9A-F]", "", text)
+
+
 def _parse(text: str):
-    """ELM 응답 -> (데이터 바이트, 멀티프레임 길이 줄 값). 오류면 (None, None)"""
+    """ELM 응답 -> (데이터 바이트, 멀티프레임 길이 줄 값, 앞부분 바이트). 오류면 (None, None, None)
+    앞부분 = 0번 프레임부터 번호가 빠짐없이 이어지고 크기도 온전한(첫 프레임 6바이트, 이후 7바이트)
+    프레임들만 이어 붙인 것 - 응답이 끊겼을 때 믿고 쓸 수 있는 부분"""
     if not text:
-        return None, None
+        return None, None, None
     upper = text.upper().replace(">", "")
     if any(word in upper for word in _ERROR_WORDS):
-        return None, None
+        return None, None, None
     length = None
     frames = {}
+    order = []          # 받은 순서대로 (프레임 번호, hex)
     plain = []
     for raw_line in re.split(r"[\r\n]+", upper):
         line = raw_line.strip()
@@ -41,33 +48,44 @@ def _parse(text: str):
             continue
         m = _FRAME_LINE.match(line)
         if m:
-            frames[int(m.group(1), 16)] = m.group(2)
+            index = int(m.group(1), 16)
+            frames[index] = m.group(2)
+            order.append((index, _clean_hex(m.group(2))))
         else:
             plain.append(line)
-    hex_text = "".join(frames[i] for i in sorted(frames)) if frames else "".join(plain)
-    hex_text = re.sub(r"[^0-9A-F]", "", hex_text)
+    hex_text = _clean_hex("".join(frames[i] for i in sorted(frames)) if frames else "".join(plain))
     if len(hex_text) < 2:
-        return None, length
-    return bytes.fromhex(hex_text[: len(hex_text) // 2 * 2]), length
+        return None, length, None
+    data = bytes.fromhex(hex_text[: len(hex_text) // 2 * 2])
+    if length is None:
+        return data, None, data
+    prefix = b""
+    for n, (index, frame_hex) in enumerate(order):
+        size = 6 if n == 0 else 7
+        if index != n % 16 or len(frame_hex) != size * 2:   # 번호가 건너뛰었거나 줄이 잘림/섞임
+            break
+        prefix += bytes.fromhex(frame_hex)
+    return data, length, prefix[:length]
 
 
 def incomplete_multiframe(text: str) -> bool:
     """멀티프레임 응답이 중간에 끊겼는지 (길이 줄보다 데이터가 짧음) - 재요청 판단용"""
-    data, length = _parse(text)
+    data, length, _ = _parse(text)
     return length is not None and (data is None or len(data) < length)
 
 
-def parse_elm_response(text: str):
+def parse_elm_response(text: str, partial: bool = False):
     """ELM327 응답 텍스트를 데이터 바이트로 변환. 오류/빈 응답이면 None.
     - 단일 프레임: "62 E0 01 .." 그대로
     - 멀티 프레임(CAF 켜짐): "02C" (길이) 다음 "0: ..", "1: .." 줄들 -> 순서대로 이어붙이고 길이로 자름.
-      일부가 빠졌으면(길이보다 짧음) None - 잘린 값으로 해석하지 않음"""
-    data, length = _parse(text)
+      일부가 빠졌으면(길이보다 짧음) None. partial=True 면 대신 믿을 수 있는 앞부분(_parse 참고)을
+      돌려줌 - 해석기는 범위 밖 값을 None 으로 두므로 앞부분에 들어 있는 값만 나옴"""
+    data, length, prefix = _parse(text)
     if data is None:
         return None
     if length is not None:
         if len(data) < length:
-            return None
+            return prefix if partial and prefix else None
         data = data[:length]
     return data
 
@@ -156,14 +174,19 @@ _TIRE_BIX = {"FL": 32, "FR": 72, "RL": 112, "RR": 152}   # 공기압 위치. 온
 def _tpms(p):
     tires = {}
     for name, bix in _TIRE_BIX.items():
+        warn = extract_raw(p, bix + 24, 8)
+        if warn is None:          # 끊긴 응답이라 경고 바이트가 없음 -> 이 타이어는 건너뜀 (경고 놓치지 않게)
+            tires[name] = (None, None, False)
+            continue
         pressure = decode(p, bix, 8, div=5, vmax=51, nullmin=0)
         temp = decode(p, bix + 8, 8, add=-50, vmin=-50, vmax=100, nullmin=-50)
-        warn = extract_raw(p, bix + 24, 8)
-        tires[name] = (pressure, temp, bool(warn) if warn is not None else False)
+        tires[name] = (pressure, temp, bool(warn))
     return {"tires": tires}
 
 
 def _oil(p):
+    """국내형(Avante S 2021, OBDb 2026-11-09)은 응답 95바이트인데 오일 온도는 앞쪽(6번째 프레임, 0번부터 셈)에 있고
+    뒤 44바이트는 항상 0 -> 어댑터가 62바이트에서 끊어도 앞부분으로 읽음 (OBD_ACCEPT_PARTIAL_REPLY)"""
     return {"oil_c": decode(p, 272, 8, mul=3, div=4, add=-48, vmin=-48, vmax=143)}
 
 
@@ -234,7 +257,7 @@ def decode_item(name: str, text: str, command: str = None):
     _, _, default_command, prefix, decoder = POLL_ITEMS[name]
     if command and command != default_command:
         prefix, decoder = ALTERNATIVES[name][command]
-    payload = payload_after(parse_elm_response(text), prefix)
+    payload = payload_after(parse_elm_response(text, partial=config.OBD_ACCEPT_PARTIAL_REPLY), prefix)
     if payload is None:
         return None
     values = decoder(payload)
