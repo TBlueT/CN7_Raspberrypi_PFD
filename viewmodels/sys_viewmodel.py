@@ -9,16 +9,20 @@ SysViewModel
 드물게 들어와도 값이 "--" 로 깜빡이지 않게 함. 한 번도 못 받았거나(미지원 포함)
 유효 시간이 지나면 View 는 "--" 로 표시합니다.
 
+조향각/브레이크/부하(SYS_SMOOTH_KEYS)는 받은 값 사이를 계기 바늘처럼 부드럽게 이어서 보여줌
+(viewmodels/smooth_value.py, FRAME_RATE_HZ 타이머로 진행).
+
 PFDViewModel 과 마찬가지로 View 에 신호를 보내지 않고, View 가 주기적으로 읽어갑니다.
 """
 
 import time
 
-from PyQt6.QtCore import QObject
+from PyQt6.QtCore import QObject, QTimer
 
 import config
 from models.vehicle_sys_model import VehicleSysModel
 from services.obd_decode import POLL_ITEMS
+from viewmodels.smooth_value import SmoothValue
 
 SYS_STALE_FACTOR = 3.0
 SYS_STALE_MIN_SEC = 10.0
@@ -33,6 +37,21 @@ class SysViewModel(QObject):
         self._key_gap = {}     # 값 키 -> 수신 간격 평균 (초)
         self._key_item = {}    # 값 키 -> 항목 이름
         self._speed = None     # (km/h, 수신 시각) - 기어 표시용 (주행 중이면 D)
+        bounds = {"brake_pct": (0.0, 100.0), "load_pct": (0.0, 100.0)}
+        self._smooth = {k: SmoothValue(tau=config.SYS_SMOOTH_TAU_SEC, gain=config.SYS_SMOOTH_GAIN,
+                                       horizon=config.SYS_SMOOTH_PREDICT_MAX_SEC,
+                                       lo=bounds.get(k, (None, None))[0], hi=bounds.get(k, (None, None))[1])
+                        for k in config.SYS_SMOOTH_KEYS}
+        if self._smooth:
+            self._smooth_timer = QTimer(self)
+            self._smooth_timer.timeout.connect(self.tick)
+            self._smooth_timer.start(int(1000 / config.FRAME_RATE_HZ))
+
+    def tick(self, now=None):
+        """부드럽게 표시하는 값들을 한 프레임 진행 (타이머가 호출)"""
+        now = time.monotonic() if now is None else now
+        for smoother in self._smooth.values():
+            smoother.tick(now)
 
     # ---- services.can_reader.CanMonitorThread.sys_values_updated 에 연결 ----
     def on_sys_values(self, item: str, values: dict):
@@ -49,6 +68,9 @@ class SysViewModel(QObject):
                 value = merged
             elif value is None:
                 continue
+            smoother = self._smooth.get(key)
+            if smoother is not None:          # 끊겼다 다시 오면(유효하지 않았으면) 바로 그 값으로
+                smoother.on_sample(value, now, reset=not self.valid(key))
             setattr(self.sys, key, value)
             self._key_item[key] = item
             last = self._key_time.get(key)
@@ -90,5 +112,10 @@ class SysViewModel(QObject):
         return time.monotonic() - self._key_time[key] <= limit
 
     def value(self, key: str):
-        """유효하면 값, 아니면 None (View 는 None 을 '--' 로 표시)"""
-        return getattr(self.sys, key) if self.valid(key) else None
+        """유효하면 값, 아니면 None (View 는 None 을 '--' 로 표시). 부드럽게 표시하는 값은 표시값."""
+        if not self.valid(key):
+            return None
+        smoother = self._smooth.get(key)
+        if smoother is not None and smoother.value is not None:
+            return smoother.value
+        return getattr(self.sys, key)

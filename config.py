@@ -75,6 +75,11 @@ SYS_OIL_RANGE_C = (40, 150)
 SYS_FUEL_TANK_L = 47.0        # 연료 막대 최대 (CN7 탱크 47 L)
 SYS_STEER_RANGE_DEG = 540     # 조향각 눈금 좌우 범위
 SYS_STEER_SIGN = -1           # 조향각 부호 (실차: OBDb 값이 화면과 반대 -> -1. 다시 반대면 1)
+# 부드럽게 표시: 띄엄띄엄 오는 값 사이를 계기 바늘처럼 이어서 움직임
+SYS_SMOOTH_KEYS = ["steer_deg", "brake_pct", "load_pct"]   # 빈 목록이면 끔 (받은 값 그대로)
+SYS_SMOOTH_TAU_SEC = 0.1      # 따라가는 빠르기 (작을수록 빠름. 0.1 = 새 값의 90% 까지 약 0.4초)
+SYS_SMOOTH_GAIN = 0.3         # 변화율 예측 비율 (0 = 예측 없음/지나침 없음, 클수록 지연 적지만 지나침 큼)
+SYS_SMOOTH_PREDICT_MAX_SEC = 0.3   # 예측은 마지막 값 받은 뒤 이 시간까지만
 # 앞문 잠금 비트 값 (OBDb: 1 = 잠김. 실차에서 반대로 나오면 0 으로)
 SYS_DOOR_LOCKED_BIT = 0       # 실차(2026-11-12): 1 일 때 잠금/해제가 반대로 표시됨 -> 0
 
