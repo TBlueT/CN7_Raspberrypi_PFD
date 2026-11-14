@@ -74,6 +74,7 @@ SYS_COOLANT_RANGE_C = (40, 130)
 SYS_OIL_RANGE_C = (40, 150)
 SYS_FUEL_TANK_L = 47.0        # 연료 막대 최대 (CN7 탱크 47 L)
 SYS_STEER_RANGE_DEG = 540     # 조향각 눈금 좌우 범위
+SYS_GEAR_SHOW_NUMBER = True   # D/M 일 때 현재 기어 번호도 표시 (D3). 번호가 이상하면 False (D 만)
 SYS_STEER_SIGN = -1           # 조향각 부호 (실차: OBDb 값이 화면과 반대 -> -1. 다시 반대면 1)
 # 부드럽게 표시: 띄엄띄엄 오는 값 사이를 계기 바늘처럼 이어서 움직임
 SYS_SMOOTH_KEYS = ["steer_deg", "brake_pct", "load_pct"]   # 빈 목록이면 끔 (받은 값 그대로)
@@ -120,8 +121,7 @@ OBD_BASE_HEADER = "7E0"
 OBD_SYS_INTERVALS = {
     "steer_brake": 1.0,           # 조향각 + 브레이크 압력   (7D1 22 0104)
     "body": 2.0,                  # 앞문 잠금 + 후진(R)      (770 22 BC04)
-    # "gear": 2.0,                # 현재 기어 (7E1 22 01A4) - 국내형 CN7 변속기 ECU 가 거절(7F 22 22)해서 끔.
-    #                               화면 기어는 후진(R, body 항목) / 주행 중 D / 정차 - 로 표시
+    "gear": 1.5,                  # 변속 레버 P/R/N/D + 현재 기어 (7E1 22 01A0. 01A4 는 국내형이 거절)
     "load": 1.0,                  # 엔진 부하               (표준 0104)
     "coolant": 10.0,              # 냉각수 온도             (표준 0105)
     "batt": 10.0,                 # 배터리 전압             (표준 0142)
@@ -134,7 +134,6 @@ OBD_MODE22_TIMEOUT_SEC = 1.0      # 제조사 명령 응답(멀티프레임) 기
 OBD_LATE_PROMPT_WAIT_SEC = 1.0    # 위 제한시간을 넘기면 프롬프트('>')를 이만큼 더 기다림 (명령 꼬임 방지)
 OBD_SYS_FAIL_LIMIT = 3            # 한 번도 응답한 적 없는 항목이 연속 이만큼 실패하면 미지원으로 보고
 OBD_SYS_UNSUPPORTED_RETRY_SEC = 60.0   # 미지원 항목은 이 주기로만 다시 시도
-OBD_GEAR_LAYOUT = "2021"          # 기어 위치: "2021"(2021~2024년식) / "2025"(2025년식~)
 OBD_DIAG_INTERVAL_SEC = 30.0      # 이 주기로 OBD 요약 로그 ([CAN] 30초 요약: ...). 0 이면 끔
 # ELM327 부가 기능 (연결 후 자동 확인, 안 되면 기존 방식으로)
 OBD_USE_RESPONSE_COUNT = True     # 표준 PID 끝에 응답 개수 '1' 을 붙여 응답 하나 받으면 바로 끝냄 (010D1)

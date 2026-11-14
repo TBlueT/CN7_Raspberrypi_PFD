@@ -156,12 +156,20 @@ def _body(p):
     }
 
 
+# 변속 레버 위치 (OBDb ELANTRA_GEAR). 국내형 Avante S 2021 실차(2026-11-09): P=11, R=10, N=9, D=8
+_GEAR_SELECTOR = {0: "P", 5: "D", 6: "N", 7: "R", 8: "D", 9: "N", 10: "R", 11: "P", 12: "M"}
+
+
 def _gear(p):
-    if config.OBD_GEAR_LAYOUT == "2025":
-        value = decode(p, 216, 8, vmax=15)
-    else:
-        value = decode(p, 188, 4, vmax=15)
-    return {"gear": None if value is None else int(value)}
+    """7E1 22 01A0 (변속기): 변속 레버 위치 + 현재 기어 번호.
+    국내형 CN7 은 01A4 는 거절(7F 22 22)하지만 01A0 은 지원 (OBDb 국내형 데이터).
+    기어 번호는 1~9 만 유효 (P/N 은 0, R 은 14 로 나옴) - 아니면 0 (None 이 아니라 0 이라 예전 번호가 남지 않음)"""
+    sel = extract_raw(p, 160, 8)
+    num = extract_raw(p, 168, 8)
+    return {
+        "gear_sel": None if sel is None else _GEAR_SELECTOR.get(sel),
+        "gear": None if num is None else (num if 1 <= num <= 9 else 0),
+    }
 
 
 def _fuel(p):
@@ -181,6 +189,8 @@ def _tpms(p):
         pressure = decode(p, bix, 8, div=5, vmax=51, nullmin=0)
         temp = decode(p, bix + 8, 8, add=-50, vmin=-50, vmax=100, nullmin=-50)
         tires[name] = (pressure, temp, bool(warn))
+    if not any(pressure is not None or temp is not None for pressure, temp, _ in tires.values()):
+        return {"tires": None}    # 한 바퀴도 못 읽음 (끊긴 응답) -> 실패로 처리
     return {"tires": tires}
 
 
@@ -223,7 +233,7 @@ def _sat(p):
 POLL_ITEMS = {
     "steer_brake": ("7D1", "7D9", "220104", bytes.fromhex("620104"), _steer_brake),
     "body":        ("770", "778", "22BC04", bytes.fromhex("62BC04"), _body),
-    "gear":        ("7E1", "7E9", "2201A4", bytes.fromhex("6201A4"), _gear),
+    "gear":        ("7E1", "7E9", "2201A0", bytes.fromhex("6201A0"), _gear),
     "load":        (None, None, "0104", bytes.fromhex("4104"), _load),
     "coolant":     (None, None, "0105", bytes.fromhex("4105"), _coolant),
     "batt":        (None, None, "0142", bytes.fromhex("4142"), _batt),

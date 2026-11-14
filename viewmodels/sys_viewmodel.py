@@ -60,7 +60,7 @@ class SysViewModel(QObject):
         now = time.monotonic()
         for key, value in values.items():
             if key == "tires":
-                good = {t: v for t, v in value.items() if v[0] is not None or v[1] is not None}
+                good = {t: v for t, v in (value or {}).items() if v[0] is not None or v[1] is not None}
                 if not good:
                     continue
                 merged = dict(self.sys.tires)
@@ -86,14 +86,17 @@ class SysViewModel(QObject):
 
     @property
     def gear_text(self):
-        """기어 표시: 기어 값이 있으면 숫자, 없으면 후진 R / 주행 중(3km/h 이상) D / 그 외 None('-').
-        (국내형 CN7 은 변속기 ECU 가 기어 요청을 거절해서 후진 비트 + 속도로 판단)"""
-        gear = self.value("gear")
+        """기어 표시: 변속 레버 위치(P/R/N/D/M, D·M 은 기어 번호를 붙여 D3)가 있으면 그것.
+        못 받으면(변속기 응답 없음) 예전 방식 - 후진 R / 주행 중(3km/h 이상) D / 그 외 None('-')"""
+        sel = self.value("gear_sel")
+        if sel is not None:
+            gear = self.value("gear")
+            if sel in ("D", "M") and config.SYS_GEAR_SHOW_NUMBER and gear:
+                return f"{sel}{gear}"
+            return sel
         reverse = self.value("reverse")
         if reverse:
             return "R"
-        if gear is not None:
-            return str(gear)
         moving = (self._speed is not None and time.monotonic() - self._speed[1] <= config.SPEED_STALE_SEC
                   and self._speed[0] >= 3)
         if reverse is False and moving:

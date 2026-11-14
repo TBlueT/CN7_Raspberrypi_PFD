@@ -10,7 +10,8 @@ class VehicleSysModel:
     lock_fl: bool = None         # 운전석 문 잠김
     lock_fr: bool = None         # 조수석 문 잠김
     reverse: bool = None         # 후진(R)
-    gear: int = None             # 현재 기어 번호
+    gear_sel: str = None         # 변속 레버 위치 "P" / "R" / "N" / "D" / "M"
+    gear: int = None             # 현재 기어 번호 (1~9, 모르면 0)
     load_pct: float = None       # 엔진 부하 (%)
     coolant_c: float = None      # 냉각수 온도
     oil_c: float = None          # 엔진오일 온도

@@ -302,7 +302,7 @@ class SysView(QWidget):
             self._text(p, (cx - 40, top + 160, 80, 14), "LOCKED" if all_locked else "UNLOCKED",
                        self._white if all_locked else self._amber, self._f8n if all_locked else self._f8)
 
-        # 기어 (후진 R 주황 / 기어 숫자 또는 주행 중 D / 모름 -)
+        # 기어 (변속 레버 P/R/N/D/M + 기어 번호, 후진 R 주황 / 모름 -)
         gear = self.vm.gear_text
         if gear == "R":
             s, color = "R", self._amber
