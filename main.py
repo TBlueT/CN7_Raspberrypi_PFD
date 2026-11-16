@@ -55,26 +55,22 @@ class MainWindow(QMainWindow):
         # ---- Service(Reader 스레드) -> ViewModel 연결 ----
         self.imu_thread = ImuReaderThread()
         self.imu_thread.attitude_updated.connect(self.pfd_vm.on_attitude_updated)
-        self.imu_thread.feature_check_updated.connect(self.pfd_vm.on_imu_feature_check)
-        self.imu_thread.connection_error.connect(self._on_imu_error)
+        self.imu_thread.log_message.connect(self._on_imu_log)
         self.imu_thread.start()
 
         self.can_thread = CanMonitorThread()
         self.can_thread.speed_updated.connect(self.pfd_vm.on_speed_updated)
         self.can_thread.rpm_updated.connect(self.pfd_vm.on_rpm_updated)
-        self.can_thread.scc_status_updated.connect(self.pfd_vm.on_scc_status_updated)
-        self.can_thread.lfa_status_updated.connect(self.pfd_vm.on_lfa_status_updated)
-        self.can_thread.hda_curve_updated.connect(self.pfd_vm.on_hda_curve_updated)
         self.can_thread.sys_values_updated.connect(self.sys_vm.on_sys_values)
         self.can_thread.speed_updated.connect(self.sys_vm.on_speed_updated)
-        self.can_thread.connection_error.connect(self._on_can_error)
+        self.can_thread.log_message.connect(self._on_can_log)
         self.can_thread.start()
 
-    # ---- 에러 로깅 (콘솔 출력만 우선 처리) ----
-    def _on_imu_error(self, message: str):
+    # ---- 로그: 콘솔(stderr)로 출력 -> log_uploader 가 파일에도 저장 ----
+    def _on_imu_log(self, message: str):
         print(f"[IMU] {message}", file=sys.stderr)
 
-    def _on_can_error(self, message: str):
+    def _on_can_log(self, message: str):
         print(f"[CAN] {message}", file=sys.stderr)
 
     def closeEvent(self, event):

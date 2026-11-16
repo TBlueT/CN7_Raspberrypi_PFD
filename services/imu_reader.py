@@ -1,14 +1,12 @@
 """
 EBIMU-9DOFV5-R3 시리얼 수신 스레드
 
-ASCII 출력 포맷: "*Roll,Pitch,Yaw\r\n"
-- 시작: '*' (0x2A)
-- 구분자: ','
-- 종료: CR LF (0x0D 0x0A)
+ASCII 출력 포맷: "*Roll,Pitch,Yaw[,추가 필드...]\r\n"
+- 시작: '*' (IMU_LINE_PREFIX), 구분자 ',', 종료 CR LF
+- 추가 필드(자이로/가속도)는 IMU_EXTRA_FIELD_ORDER 순서로 3개씩 (실기: 가속도 + 카운터)
 
-시리얼 읽기는 블로킹 특성이 있으므로 반드시 QThread에서 돌리고,
-파싱된 최신 자세각만 시그널로 GUI 스레드에 전달합니다.
-GUI 쪽 paintEvent가 시리얼 타이밍에 발목 잡히지 않도록 하기 위함입니다.
+시리얼 읽기는 블로킹이라 QThread 에서 돌리고, 자세각은 시그널로 GUI 스레드에 전달.
+연결될 때마다 IMU_INIT_COMMANDS 를 보내고 응답을 로그로 남김.
 """
 
 import serial
@@ -20,15 +18,10 @@ import config
 class ImuReaderThread(QThread):
     # roll_deg, pitch_deg, yaw_deg
     attitude_updated = pyqtSignal(float, float, float)
-    # gx, gy, gz (raw 각속도, EBIMU 출력 단위 그대로)
-    # EBIMU에 sog1로 자이로 추가 출력이 켜져 있어야 발행됨.
-    gyro_updated = pyqtSignal(float, float, float)
-    # ax, ay, az (가속도, m/s^2) - EBIMU에서 추가 출력 필드가 켜져 있어야 발행됨.
-    linear_accel_updated = pyqtSignal(float, float, float)
-    # True: 내장 안정화 기능(AVC 등) 명령에 응답 있음 / False: 응답 없음(기능
-    # 없거나 명령이 안 맞음). 연결될 때마다 한 번씩 발행됨.
-    feature_check_updated = pyqtSignal(bool)
-    connection_error = pyqtSignal(str)
+    # 추가 출력 필드 (IMU_EXTRA_FIELD_ORDER 에 있을 때만 발행. 지금 화면에는 안 씀)
+    gyro_updated = pyqtSignal(float, float, float)          # gx, gy, gz (EBIMU 출력 단위 그대로)
+    linear_accel_updated = pyqtSignal(float, float, float)  # ax, ay, az (g)
+    log_message = pyqtSignal(str)                           # 연결 상태/초기화 응답 로그 (main 이 [IMU] 로 출력)
 
     def __init__(self, port=None, baudrate=None, parent=None):
         super().__init__(parent)
@@ -50,7 +43,6 @@ class ImuReaderThread(QThread):
                 continue
 
             self._send_init_commands(ser)
-            self._check_stabilization_feature(ser)
             self._read_loop(ser)  # 이 함수는 읽기 오류/연결 끊김 시 리턴됨
 
             if ser.is_open:
@@ -60,41 +52,8 @@ class ImuReaderThread(QThread):
                 # 연결이 끊겼다면(케이블 문제 등) 잠시 대기 후 재연결 시도
                 self.msleep(int(config.IMU_RECONNECT_INTERVAL_SEC * 1000))
 
-    def _check_stabilization_feature(self, ser: serial.Serial):
-        """내장 안정화 기능(AVC 등) 명령을 보내보고, 응답이 있는지로 그 기능이
-        이 하드웨어/펌웨어에 실제로 있는지 확인한다.
-
-        주의: "응답이 온다"만 확인하는 방식이라, 그 응답이 진짜 "성공적으로
-        켜졌다"는 뜻인지 "그런 명령 모른다"는 에러 응답인지까지는 구분 못한다.
-        EBIMU 에러 응답 형식이 확인되면 그때 더 정확하게 판별하도록 개선 가능."""
-        command = getattr(config, "IMU_STABILIZATION_CHECK_COMMAND", None)
-        if not command:
-            self.feature_check_updated.emit(False)
-            return
-
-        try:
-            ser.reset_input_buffer()
-            ser.write(command.encode("ascii"))
-            self.connection_error.emit(f"IMU 안정화 기능 확인 명령 전송: {command!r}")
-
-            response_lines = self._collect_non_data_lines(
-                ser, window_sec=config.IMU_INIT_COMMAND_DELAY_SEC)
-
-            if response_lines:
-                for line in response_lines:
-                    self.connection_error.emit(f"IMU 안정화 기능 응답: {line!r}")
-                self.connection_error.emit("IMU 안정화 기능 확인됨 (응답 있음)")
-                self.feature_check_updated.emit(True)
-            else:
-                self.connection_error.emit("IMU 안정화 기능 응답 없음 (기능 없거나 명령 불일치)")
-                self.feature_check_updated.emit(False)
-        except serial.SerialException as exc:
-            self.connection_error.emit(f"IMU 안정화 기능 확인 실패: {exc}")
-            self.feature_check_updated.emit(False)
-
     def _send_init_commands(self, ser: serial.Serial):
-        """부팅/재연결 시마다 EBIMU에 필요한 설정 명령을 자동으로 보낸다.
-        config.IMU_INIT_COMMANDS에 정확한 명령 문자열을 채워 넣으면 됨.
+        """부팅/재연결 시마다 config.IMU_INIT_COMMANDS 를 보내고 응답을 로그로 남긴다.
 
         주의: EBIMU는 명령을 보내는 동안에도 자세각 데이터 스트림(*1.2,3.4,5.6\r\n
         형태)을 계속 쏟아낸다. 그래서 명령 보낸 직후 버퍼를 그냥 읽으면 진짜
@@ -110,19 +69,19 @@ class ImuReaderThread(QThread):
             try:
                 ser.reset_input_buffer()
                 ser.write(command.encode("ascii"))
-                self.connection_error.emit(f"IMU 초기화 명령 전송: {command!r}")
+                self.log_message.emit(f"IMU 초기화 명령 전송: {command!r}")
 
                 response_lines = self._collect_non_data_lines(
                     ser, window_sec=config.IMU_INIT_COMMAND_DELAY_SEC)
                 if response_lines:
                     for line in response_lines:
-                        self.connection_error.emit(f"IMU 응답: {line!r}")
+                        self.log_message.emit(f"IMU 응답: {line!r}")
                 else:
-                    self.connection_error.emit(
+                    self.log_message.emit(
                         "IMU 응답 없음 (데이터 스트림에 섞여 못 찾았거나, "
                         "명령이 무시됐을 수 있음)")
             except serial.SerialException as exc:
-                self.connection_error.emit(f"IMU 초기화 명령 전송 실패: {exc}")
+                self.log_message.emit(f"IMU 초기화 명령 전송 실패: {exc}")
                 return
 
     def _collect_non_data_lines(self, ser: serial.Serial, window_sec: float) -> list:
@@ -161,7 +120,7 @@ class ImuReaderThread(QThread):
                 timeout=config.IMU_TIMEOUT_SEC,
             )
         except serial.SerialException as exc:
-            self.connection_error.emit(f"시리얼 포트 열기 대기 중: {exc}")
+            self.log_message.emit(f"시리얼 포트 열기 대기 중: {exc}")
             return None
 
     def _read_loop(self, ser: serial.Serial):
@@ -183,7 +142,7 @@ class ImuReaderThread(QThread):
                     buffer = b""
 
             except serial.SerialException as exc:
-                self.connection_error.emit(f"시리얼 연결 끊김, 재연결 시도: {exc}")
+                self.log_message.emit(f"시리얼 연결 끊김, 재연결 시도: {exc}")
                 return
 
     def _parse_line(self, raw_line: bytes):
@@ -210,8 +169,7 @@ class ImuReaderThread(QThread):
         # EBIMU에 추가 출력 필드(자이로/가속도)가 켜져 있으면 Roll,Pitch,Yaw
         # 뒤에 3개씩 이어서 옴. 순서는 config.IMU_EXTRA_FIELD_ORDER로 결정
         # (예: ["gyro","accel"] -> Roll,Pitch,Yaw,gx,gy,gz,ax,ay,az).
-        # (현재 자세 표시에는 안 쓰고 파싱/로그만 함. 같은 샘플의 자이로/가속도를
-        # 먼저 발행한 뒤 자세각을 발행하는 순서는 유지)
+        # (같은 샘플의 자이로/가속도를 먼저 발행한 뒤 자세각을 발행)
         extra_order = getattr(config, "IMU_EXTRA_FIELD_ORDER", [])
         expected_len = 3 + 3 * len(extra_order)
 
@@ -232,12 +190,12 @@ class ImuReaderThread(QThread):
 
                     if self._extra_debug_count < 5:
                         self._extra_debug_count += 1
-                        self.connection_error.emit(
+                        self.log_message.emit(
                             f"IMU 추가 필드({'+'.join(extra_order)}) 파싱됨 "
                             f"[{self._extra_debug_count}/5]: {values}")
             elif not self._extra_warned_short:
                 self._extra_warned_short = True
-                self.connection_error.emit(
+                self.log_message.emit(
                     f"IMU_EXTRA_FIELD_ORDER={extra_order}인데 필드가 {len(parts)}개뿐입니다 "
                     f"({expected_len}개 필요) - 초기화 명령이 안 먹혔거나 필드 순서가 다를 "
                     f"수 있습니다. raw payload 예시: {payload!r}")

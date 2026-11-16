@@ -1,8 +1,9 @@
 """
 PFDViewModel
 
-services(Reader 스레드)의 시그널을 받는 슬롯들을 제공하고, 내부 Model을
-갱신합니다.
+왼쪽 PFD 상태: IMU 자세(AttitudeModel) + OBD 속도/RPM(VehicleModel).
+services(Reader 스레드)의 시그널을 받는 슬롯들을 제공하고 Model 을 갱신합니다.
+속도는 가속도 예측 보간으로, RPM 은 평활로 FRAME_RATE_HZ 타이머가 표시값을 움직입니다.
 
 주의: 여기서는 View에 "다시 그려라" 신호를 보내지 않습니다. IMU 같은 센서는
 초당 수십~수백 번 갱신될 수 있는데, 그때마다 화면을 다시 그리면 실제 화면
@@ -56,11 +57,7 @@ class PFDViewModel(QObject):
         self.attitude.pitch_deg = pitch_deg
         self.attitude.yaw_deg = (yaw_deg + config.HEADING_OFFSET_DEG) % 360.0
 
-    # ---- services.imu_reader.ImuReaderThread.feature_check_updated 에 연결 ----
-    def on_imu_feature_check(self, confirmed: bool):
-        self.attitude.imu_feature_confirmed = confirmed
-
-    # ---- services.can_reader.CanMonitorThread 각 시그널에 연결 ----
+    # ---- services.can_reader.CanMonitorThread.speed_updated 에 연결 ----
     def on_speed_updated(self, value: float):
         """OBD 새 속도 수신 (가속도 예측 보간):
         1) OBD 값 변화율로 가속도 갱신 - 커지는 쪽은 평활, 줄어드는 쪽은 즉시 반영,
@@ -137,17 +134,6 @@ class PFDViewModel(QObject):
     def on_rpm_updated(self, value: float):
         self.vehicle.rpm_target = value
         self._rpm_time = time.monotonic()
-
-    def on_scc_status_updated(self, main_on: bool, active: bool, set_speed: float):
-        self.vehicle.scc_main_on = main_on
-        self.vehicle.scc_active = active
-        self.vehicle.scc_set_speed = set_speed
-
-    def on_lfa_status_updated(self, active: bool):
-        self.vehicle.lfa_active = active
-
-    def on_hda_curve_updated(self, active: bool):
-        self.vehicle.hda_curve_active = active
 
     # ---- 데이터 유효성 (View 가 매 프레임 확인) ----
     @staticmethod

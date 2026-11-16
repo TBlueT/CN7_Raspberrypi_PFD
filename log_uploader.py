@@ -17,6 +17,11 @@
    올린 로그는 LOG_DIR/sent/ 로 옮기고, 오래된 것은 LOG_KEEP_SENT 개만 남김.
    호출하는 곳: launcher.py (부팅 시 LOGS 단계), main.py (실행 중 LOG_UPLOAD_RETRY_MIN 분마다)
 
+3) 정리 (prune_logs(), 실행 시작할 때)
+   오래 못 올려도 SD 카드가 차지 않게: LOG_KEEP_DAYS(30일)보다 오래된 로그는 못 올린 것도 삭제,
+   전체가 LOG_MAX_TOTAL_MB(200MB)를 넘으면 오래된 것부터 삭제 (올린 것 먼저).
+   나이는 파일 수정 시각 기준 - 시계가 틀린 채 기록된 파일은 실제보다 조금 일찍 지워질 수 있음.
+
 토큰: GitHub fine-grained token (이 저장소만, 권한 Issues: Read and write)을
   ~/.config/cn7/github_token 파일에 넣거나 환경변수 CN7_GITHUB_TOKEN 으로 지정.
   저장소에 올라가면 안 되므로 코드 폴더 밖에 둠. 없으면 업로드만 건너뜀.
@@ -43,6 +48,8 @@ _DEFAULTS = {
     "LOG_DIR": "~/cn7_logs",
     "LOG_MAX_FILE_MB": 5,
     "LOG_KEEP_SENT": 30,
+    "LOG_KEEP_DAYS": 30,
+    "LOG_MAX_TOTAL_MB": 200,
     "LOG_UPLOAD_ENABLED": True,
     "LOG_UPLOAD_REPO": "TBlueT/CN7_Raspberrypi_PFD",
     "LOG_UPLOAD_TOKEN_FILE": "~/.config/cn7/github_token",
@@ -236,6 +243,14 @@ def start_file_log(project_dir=None):
     commit = _git_head(project_dir or os.path.dirname(os.path.abspath(__file__)))
     print(f"[LOG] 실행 시작 {datetime.datetime.now():%Y-%m-%d %H:%M:%S}  커밋 {commit or '?'}  로그 {path}",
           file=sys.stderr)
+    try:
+        by_age, by_size = prune_logs()
+        parts = ([f"{_cfg('LOG_KEEP_DAYS')}일 지남 {by_age}개"] if by_age else []) + \
+                ([f"전체 {_cfg('LOG_MAX_TOTAL_MB')}MB 넘어서 {by_size}개"] if by_size else [])
+        if parts:
+            print(f"[LOG] 오래된 로그 삭제: {', '.join(parts)}", file=sys.stderr)
+    except Exception as exc:                # 정리 문제로 앱이 멈추지 않게
+        print(f"[LOG] 오래된 로그 정리 실패: {exc}", file=sys.stderr)
     return path
 
 
@@ -451,3 +466,61 @@ def start_background_uploader():
 
     threading.Thread(target=loop, name="log-uploader", daemon=True).start()
     return stop
+
+
+# =====================================================================
+# 3) 정리
+# =====================================================================
+def _log_files():
+    """(수정 시각, 올린 것인지, 경로, 크기) 목록 - 지금 쓰고 있는 파일 제외"""
+    directory = log_dir()
+    active = os.path.abspath(_active_log) if _active_log else None
+    files = []
+    for folder, sent in ((directory, False), (os.path.join(directory, "sent"), True)):
+        if not os.path.isdir(folder):
+            continue
+        for name in os.listdir(folder):
+            path = os.path.join(folder, name)
+            if not (name.startswith("run_") and name.endswith(".log")) or os.path.abspath(path) == active:
+                continue
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            files.append((st.st_mtime, sent, path, st.st_size))
+    return files
+
+
+def _remove(path):
+    try:
+        os.remove(path)
+        return True
+    except OSError:
+        return False
+
+
+def prune_logs(now=None):
+    """LOG_KEEP_DAYS 보다 오래된 로그(못 올린 것 포함)를 지우고, 그래도 전체가 LOG_MAX_TOTAL_MB 를
+    넘으면 올린 것 -> 못 올린 것 순서로 오래된 것부터 지움. (나이로 지운 수, 용량으로 지운 수) 반환."""
+    now = time.time() if now is None else now
+    files = _log_files()
+    by_age = by_size = 0
+    days = float(_cfg("LOG_KEEP_DAYS") or 0)
+    if days > 0:
+        limit = now - days * 86400
+        for f in [f for f in files if f[0] < limit]:
+            if _remove(f[2]):
+                files.remove(f)
+                by_age += 1
+    cap = float(_cfg("LOG_MAX_TOTAL_MB") or 0) * 1024 * 1024
+    if cap > 0:
+        total = sum(f[3] for f in files)
+        if _active_log and os.path.exists(_active_log):
+            total += os.path.getsize(_active_log)
+        for f in sorted(files, key=lambda f: (not f[1], f[0])):
+            if total <= cap:
+                break
+            if _remove(f[2]):
+                total -= f[3]
+                by_size += 1
+    return by_age, by_size

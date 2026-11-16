@@ -86,15 +86,6 @@ def restore_backup() -> bool:
     return True
 
 
-def _git_head():
-    try:
-        r = subprocess.run(["git", "-C", PROJECT_DIR, "rev-parse", "--short", "HEAD"],
-                           capture_output=True, text=True, timeout=10)
-        return r.stdout.strip() if r.returncode == 0 else None
-    except Exception:
-        return None
-
-
 def _git_out(*args):
     try:
         r = subprocess.run(["git", "-C", PROJECT_DIR, *args],
@@ -102,6 +93,10 @@ def _git_out(*args):
         return r.stdout.strip() if r.returncode == 0 else ""
     except Exception:
         return ""
+
+
+def _git_head():
+    return _git_out("rev-parse", "--short", "HEAD") or None
 
 
 def _last_line(*texts) -> str:

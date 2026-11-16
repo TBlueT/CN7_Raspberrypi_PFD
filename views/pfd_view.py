@@ -1,22 +1,16 @@
 """
-PFDView (MVVM의 View)
+PFDView (MVVM의 View) - 화면 왼쪽 400x480, B737 NG PFD 스타일
 
-이전 PFDWidget과 렌더링 로직은 동일하지만, 상태를 직접 들고 있지 않고
-viewmodels.pfd_viewmodel.PFDViewModel의 model(attitude/vehicle)만 읽어서
-그립니다. set_* 메서드가 전혀 없고, ViewModel은 신호를 보내지 않습니다. 대신
-이 View가 config.FRAME_RATE_HZ 고정 주기 타이머로 스스로 최신 상태를 읽어가서
-다시 그립니다(폴링). IMU 등 센서가 아무리 빨리 갱신돼도 화면 갱신 속도는
-이 주기로 제한됩니다.
+PFDViewModel 의 model(attitude/vehicle)만 읽어서 그림. ViewModel 은 신호를 보내지 않고,
+이 View 가 config.FRAME_RATE_HZ 타이머로 스스로 다시 그림(폴링) - 센서가 아무리 빨리
+갱신돼도 화면 갱신은 이 주기로 제한됨.
 
-- 지평선(하늘/땅)이 화면 전체가 아니라 둥근 사각형 ADI 볼(config.ADI_BALL_RECT)
-  안에만 보이도록 클리핑됨 (실제 737처럼)
-- 속도/고도 테이프가 그 볼 양옆에 밀착 배치
-- 이 위젯 자체는 400x480 크기의 독립 패널이며, 화면 전체(800x480)의 왼쪽
-  절반을 차지. 오른쪽 절반은 views.sys_view.SysView(차량 시스템 화면)가 담당 (main.py에서 나란히 배치)
-- 상단 FMA(비행모드 어나운시에이터) 스타일 모드바
-- 속도 테이프에 트렌드 화살표 추가
-
-오른쪽 테이프는 엔진 RPM (예전 고도 테이프 자리, OBD PID 010C)
+- 맨 위: FMA 스타일 모드바 (SPD / HDG SEL / ALT, 장식용 - 회색 고정)
+- 가운데: 둥근 사각형 ADI 볼 (config.ADI_BALL_RECT 안에만 하늘/땅) + 뱅크 눈금
+- 왼쪽: 속도 테이프 (트렌드 화살표, 과속 줄무늬/경고)
+- 오른쪽: 엔진 RPM 테이프 (OBD 010C, 실기의 고도 테이프 자리)
+- 아래: 헤딩 나침반
+- 데이터가 끊기면 해당 계기에 ATT / SPD / RPM / HDG 고장 표시
 """
 
 import math
@@ -31,7 +25,7 @@ from views.fail_flag import draw_fail_flag
 
 
 class PFDView(QWidget):
-    # 속도/고도 현재값 박스 크기 (두 박스 공통, 포인터 제외)
+    # 속도/RPM 현재값 박스 크기 (두 박스 공통, 포인터 제외)
     READOUT_BOX_W = 58
     READOUT_DRUM_W = 24
 
@@ -50,7 +44,6 @@ class PFDView(QWidget):
         self._render_timer.start(int(1000 / config.FRAME_RATE_HZ))
 
         self._font_small = QFont("sans-serif", 10)
-        self._font_value = QFont("sans-serif", 15, QFont.Weight.Medium)
         self._font_flag_big = QFont("sans-serif", 18, QFont.Weight.Bold)
         self._font_flag = QFont("sans-serif", 14, QFont.Weight.Bold)
         self._font_tape = QFont("sans-serif", 11, QFont.Weight.Bold)
@@ -58,7 +51,6 @@ class PFDView(QWidget):
         self._font_overspeed = QFont("sans-serif", 7, QFont.Weight.Bold)
         self._font_readout = QFont("sans-serif", 16, QFont.Weight.Bold)
         self._font_readout_small = QFont("sans-serif", 12, QFont.Weight.Bold)
-        self._font_selected = QFont("sans-serif", 14, QFont.Weight.Bold)
         self._font_compass = QFont("sans-serif", 11, QFont.Weight.Bold)
         self._font_compass_big = QFont("sans-serif", 13, QFont.Weight.Bold)
         self._font_readout_heading = QFont("sans-serif", 15, QFont.Weight.Bold)
@@ -130,7 +122,7 @@ class PFDView(QWidget):
 
     # ---------------------------------------------------------------
     def _draw_fma_bar(self, painter: QPainter):
-        vehicle = self.vm.vehicle
+        """모드바: 실기의 FMA 자리. 이 어댑터로는 SCC/LFA/HDA 상태를 못 받아서 글자는 회색 고정."""
         x, y, w, h = config.FMA_BAR_RECT
         rect = QRectF(x, y, w, h)
         painter.setPen(QPen(QColor(config.COLOR_TAPE_BORDER), 1))
@@ -141,33 +133,10 @@ class PFDView(QWidget):
             painter.drawLine(QPointF(div_x, y), QPointF(div_x, y + h))
 
         painter.setFont(self._font_small)
-
-        if vehicle.scc_active:
-            spd_text = f"SPD {int(round(vehicle.scc_set_speed))}"
-            spd_color = config.COLOR_MODE_TEXT
-        elif vehicle.scc_main_on:
-            spd_text = "SPD"
-            spd_color = config.COLOR_WHITE
-        else:
-            spd_text = "SPD"
-            spd_color = config.COLOR_MODE_TEXT_OFF
-
-        if vehicle.hda_curve_active:
-            hdg_text = "HDA"
-            hdg_color = config.COLOR_MODE_TEXT
-        else:
-            hdg_text = "LFA" if vehicle.lfa_active else "HDG SEL"
-            hdg_color = config.COLOR_MODE_TEXT if vehicle.lfa_active else config.COLOR_MODE_TEXT_OFF
-
-        alt_text = "ALT"
-        alt_color = (config.COLOR_FEATURE_OK if self.vm.attitude.imu_feature_confirmed
-                     else config.COLOR_FEATURE_MISSING)
-
+        painter.setPen(QPen(QColor(config.COLOR_MODE_TEXT_OFF)))
         col_bounds = [x, config.FMA_DIVIDER_X[0], config.FMA_DIVIDER_X[1], x + w]
-        labels = [(spd_text, spd_color), (hdg_text, hdg_color), (alt_text, alt_color)]
-        for i, (text, color) in enumerate(labels):
+        for i, text in enumerate(("SPD", "HDG SEL", "ALT")):
             col_rect = QRectF(col_bounds[i], y, col_bounds[i + 1] - col_bounds[i], h)
-            painter.setPen(QPen(QColor(color)))
             painter.drawText(col_rect, Qt.AlignmentFlag.AlignCenter, text)
 
     def _draw_adi_ball(self, painter: QPainter):
@@ -280,7 +249,7 @@ class PFDView(QWidget):
         painter.restore()
 
     # ---------------------------------------------------------------
-    # 속도 / 고도 테이프 (B737 NG 스타일)
+    # 속도 / RPM 테이프 (B737 NG 스타일)
     #   회색 테이프, 높은 값이 위. 현재값 박스는 검정 바탕 + 흰 테두리 +
     #   ADI 쪽 포인터, 끝자리는 드럼처럼 세로로 굴러감(테이프와 같은 방향).
     # ---------------------------------------------------------------
@@ -326,8 +295,6 @@ class PFDView(QWidget):
         v = max(0.0, vehicle.speed_kph)
         ppu = config.SPEED_PIXELS_PER_UNIT
         top, body, bottom = self._tape_layout(config.SPEED_TAPE_RECT)
-        scc_set = (vehicle.scc_set_speed
-                   if vehicle.scc_active and vehicle.scc_set_speed > 0 else None)
 
         painter.fillRect(body, QColor(config.COLOR_TAPE_BG))
         painter.save()
@@ -338,16 +305,10 @@ class PFDView(QWidget):
         self._draw_speed_trend(painter, body, vehicle.speed_accel_kph_s, ppu)
         painter.restore()
 
-        if scc_set is not None:
-            self._draw_speed_bug(painter, body, v, scc_set, ppu)
         self._draw_speed_readout(painter, body, v)
 
-        # 위 띠: SCC 설정속도 (실기의 MCP 선택 속도 자리, 마젠타)
+        # 위 띠: 비어 있음 (실기의 선택 속도 자리)
         painter.fillRect(top, QColor(config.COLOR_BLACK))
-        if scc_set is not None:
-            painter.setFont(self._font_selected)
-            painter.setPen(QPen(QColor(config.COLOR_SELECTED)))
-            painter.drawText(top, Qt.AlignmentFlag.AlignCenter, f"{int(round(scc_set))}")
         # 아래 띠: 단위 (실기의 마하수 자리). 옵션: 과속 중 빨간 OVERSPEED
         painter.setFont(self._font_tape_unit)
         if self.vm.overspeed and config.SPEED_OVERSPEED_TEXT:
@@ -403,21 +364,10 @@ class PFDView(QWidget):
         painter.drawLine(QPointF(tx, tip_y), QPointF(tx - 4, tip_y - d * 7))
         painter.drawLine(QPointF(tx, tip_y), QPointF(tx + 4, tip_y - d * 7))
 
-    def _draw_speed_bug(self, painter: QPainter, body: QRectF, v: float, target: float, ppu: float):
-        """SCC 설정속도 버그 (마젠타). 범위 밖이면 테이프 끝에 걸쳐 둠."""
-        by = min(max(body.center().y() - (target - v) * ppu, body.top() + 2), body.bottom() - 2)
-        left, right = body.right() - 7, body.right() + 5
-        painter.setPen(QPen(QColor(config.COLOR_SELECTED), 2))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPolygon(QPolygonF([
-            QPointF(left, by - 8), QPointF(right, by - 8), QPointF(right, by + 8),
-            QPointF(left, by + 8), QPointF(left + 5, by),
-        ]))
-
     def _draw_speed_readout(self, painter: QPainter, body: QRectF, v: float):
         """현재 속도 박스: 오른쪽(ADI 쪽) 포인터, 일의 자리 드럼, 십의 자리는 9->0 때만 굴러감."""
         mid = body.center().y()
-        # 박스 크기는 고도 박스와 동일 (READOUT_BOX_W / READOUT_DRUM_W)
+        # 박스 크기는 RPM 박스와 동일 (READOUT_BOX_W / READOUT_DRUM_W)
         bl = body.left() + 2
         br = bl + self.READOUT_BOX_W
         dl = br - self.READOUT_DRUM_W   # 드럼 창 왼쪽
@@ -435,7 +385,7 @@ class PFDView(QWidget):
         base = math.floor(v)
         frac = v - base
         units = base % 10
-        painter.setFont(self._font_readout_small)   # 고도 박스 숫자와 같은 크기
+        painter.setFont(self._font_readout_small)   # RPM 박스 숫자와 같은 크기
         painter.setPen(QPen(color))
 
         def upper(n):
@@ -453,7 +403,7 @@ class PFDView(QWidget):
             painter.drawText(upper_rect, align_r, upper(base))
         painter.restore()
 
-        # 드럼 숫자는 고도 박스 드럼과 같은 크기/간격 (12pt, 17px)
+        # 드럼 숫자는 RPM 박스 드럼과 같은 크기/간격 (12pt, 17px)
         drum = QRectF(dl + 1, mid - 20, br - dl - 2, 40)
         sp = 17
         painter.save()
